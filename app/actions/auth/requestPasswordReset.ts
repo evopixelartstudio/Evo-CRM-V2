@@ -53,7 +53,7 @@ export async function requestPasswordReset(
   // `lib/email/estado.ts`.
   if (await semSmtpNaInstalacao()) return { ok: false, error: "smtp_not_configured" };
 
-  const supabase = await createClient();
+  const supabase = await createClient("lax");
   const { error } = await supabase.auth.resetPasswordForEmail(parsed.data.email, {
     // ?type=recovery sobrevive ao redirect do GoTrue (preserva query string
     // existente ao anexar `code=`/`token_hash=`) — sem SMTP customizado o

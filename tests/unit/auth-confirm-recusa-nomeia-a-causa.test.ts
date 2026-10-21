@@ -124,6 +124,20 @@ describe("/auth/confirm nomeia a causa da recusa", () => {
     );
   });
 
+  it("link de recovery sem query (fragmento no browser) segue para /login/reset", async () => {
+    const res = await GET(new NextRequest("https://crm.exemplo.com.br/auth/confirm?type=recovery"));
+    const loc = new URL(res.headers.get("location") ?? "");
+    expect(loc.pathname).toBe("/login/reset");
+  });
+
+  it("link de recovery com code que falhou no servidor segue para /login/reset com code", async () => {
+    supabaseQue(RECUSA);
+    const res = await GET(new NextRequest("https://crm.exemplo.com.br/auth/confirm?type=recovery&code=abc"));
+    const loc = new URL(res.headers.get("location") ?? "");
+    expect(loc.pathname).toBe("/login/reset");
+    expect(loc.searchParams.get("code")).toBe("abc");
+  });
+
   it("a tela do login tem texto para o código novo — senão a recusa fica muda", () => {
     // Sem este caso, `?error=template_padrao` chegaria a uma página que só
     // conhece `link_invalido` e `provisionamento`: nenhum aviso renderiza, e o

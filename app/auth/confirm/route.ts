@@ -94,6 +94,15 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(continuar);
   }
 
+  // Se o tipo for recovery e não veio tokenHash nem code na query string,
+  // é porque o GoTrue redirecionou com fragmento de URL (#access_token=...&refresh_token=...&type=recovery).
+  // Fragmentos de URL nunca chegam ao servidor HTTP. Em vez de acusar erro e descartar
+  // a navegação para /login?error=link_invalido, redirecionamos para /login/reset (o navegador
+  // preserva o hash fragmento no redirect 307 e o cliente estabelece a sessão).
+  if (type === "recovery" && !tokenHash && !code) {
+    return NextResponse.redirect(new URL("/login/reset", env.NEXT_PUBLIC_APP_URL), 307);
+  }
+
   return confirmar({ tokenHash: null, code, type: type as EmailOtpType | null, request, status: 307 });
 }
 
@@ -177,6 +186,13 @@ async function confirmar({
       metadata: { type, formato: viaTokenHash ? "token_hash" : "code", reason: error?.message ?? "no_user" },
       requestId,
     });
+
+    if (type === "recovery" && !viaTokenHash && code) {
+      const resetUrl = new URL("/login/reset", env.NEXT_PUBLIC_APP_URL);
+      resetUrl.searchParams.set("code", code);
+      return NextResponse.redirect(resetUrl, status);
+    }
+
     // Dois códigos porque são duas causas e dois consertos. `link_invalido`
     // continua sendo "peça outro link". `template_padrao` diz o que a tela
     // antes escondia: o link veio do modelo padrão, pedir outro não adianta, e

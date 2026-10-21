@@ -2,7 +2,7 @@
 
 import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useTransition, useState } from "react";
+import { useTransition, useState, useEffect } from "react";
 
 import { useT } from "@/hooks/i18n/useT";
 import { resetPasswordSchema, type ResetPasswordInput } from "@/lib/auth/schemas";
@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { updatePassword } from "@/app/actions/auth/updatePassword";
 import { Eye, EyeSlash } from "@/lib/ui/icons";
 import { PasswordStrength } from "@/components/auth/PasswordStrength";
+import { createClient } from "@/lib/supabase/browser";
 
 export function ResetPasswordForm() {
   const t = useT();
@@ -32,6 +33,34 @@ export function ResetPasswordForm() {
   });
   const password = useWatch({ control, name: "password" });
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    try {
+      const supabase = createClient();
+
+      // 1. Processa fragmento de hash se presente (#access_token=...&refresh_token=...)
+      const hash = window.location.hash;
+      if (hash && hash.includes("access_token=")) {
+        const params = new URLSearchParams(hash.replace(/^#/, ""));
+        const access_token = params.get("access_token");
+        const refresh_token = params.get("refresh_token");
+        if (access_token && refresh_token) {
+          void supabase.auth.setSession({ access_token, refresh_token });
+        }
+      }
+
+      // 2. Processa query param code se presente (?code=...)
+      const searchParams = new URLSearchParams(window.location.search);
+      const code = searchParams.get("code");
+      if (code) {
+        void supabase.auth.exchangeCodeForSession(code);
+      }
+    } catch {
+      // Sem runtime Supabase configurado (ex.: testes de unidade que não sobem cliente)
+    }
+  }, []);
+
   const onSubmit = (values: ResetPasswordInput) => {
     setServerError(null);
     startTransition(async () => {
@@ -49,6 +78,22 @@ export function ResetPasswordForm() {
         setNeedsMfa(true);
         setServerError(t("Código de verificação inválido. Tente de novo."));
       } else if (res.error === "session_expired") {
+        // Fallback: se a Server Action não encontrou a sessão no servidor
+        // (por exemplo, na transição de fragmento de URL), tentamos atualizar diretamente
+        // pelo supabase-js do browser se este possuir a sessão ativa:
+        try {
+          const supabase = createClient();
+          const { error: clientError } = await supabase.auth.updateUser({
+            password: values.password,
+          });
+          if (!clientError) {
+            await supabase.auth.signOut();
+            window.location.href = "/login?reset=success";
+            return;
+          }
+        } catch {
+          // fallback não disponível
+        }
         setServerError(t("Sessão de redefinição expirada. Peça um novo link em Recuperar senha."));
       } else if (res.error === "same_password") {
         setServerError(t("A nova senha precisa ser diferente da atual."));

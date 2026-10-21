@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { AuthRecoveryRedirect } from "@/components/auth/AuthRecoveryRedirect";
 import { EntrarComGoogle } from "@/components/auth/EntrarComGoogle";
 import { LoginForm } from "@/components/auth/LoginForm";
 import { marcaDaSaida } from "@/lib/branding/saida";
@@ -31,6 +32,7 @@ export default async function LoginPage({
 
   return (
     <div className="space-y-6">
+      <AuthRecoveryRedirect />
       <div className="space-y-1.5 text-center">
         <h1 className="text-2xl font-semibold tracking-tight">{t("Entrar")}</h1>
         <p className="text-sm text-muted-foreground">{marca.nome}</p>

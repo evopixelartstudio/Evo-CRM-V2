@@ -72,8 +72,8 @@ async function clienteDeServidor(sameSite: "strict" | "lax") {
   );
 }
 
-export async function createClient() {
-  return clienteDeServidor("strict");
+export async function createClient(sameSite: "strict" | "lax" = "strict") {
+  return clienteDeServidor(sameSite);
 }
 
 /**
@@ -108,5 +108,14 @@ export async function createClient() {
  * não uma mudança de postura.)
  */
 export async function createClientDeEntradaComGoogle() {
+  return clienteDeServidor("lax");
+}
+
+/**
+ * Cliente para PEDIR a recuperação de senha (`resetPasswordForEmail`) — de propósito
+ * com `sameSite: "lax"`, para o cookie do VERIFICADOR de PKCE viajar no clique do link
+ * que vem do webmail (navegação cross-site top-level GET), igual ao login com Google.
+ */
+export async function createClientDeRecuperacao() {
   return clienteDeServidor("lax");
 }
