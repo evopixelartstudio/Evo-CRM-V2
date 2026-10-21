@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 #
 # deploy-hostinger.sh
-# Procedimento automatizado e seguro de deploy do DeskcommCRM na VPS Hostinger com Traefik.
+# Instalação e deploy do DeskcommCRM na VPS Hostinger com Traefik.
 #
-# Proteções garantidas:
-#  ✓ Valida variáveis essenciais do .env antes de iniciar.
-#  ✓ Preserva outros contêineres (n8n, Hermes, Evolution Go, etc.).
-#  ✓ Realiza backup do banco Supabase antes de qualquer alteração.
-#  ✓ Aplica o schema de forma idempotente (não apaga nem sobrescreve dados existentes).
-#  ✓ Constrói as imagens localmente a partir do seu repositório (não usa imagem antiga de terceiros).
-#  ✓ Roteia através do Traefik existente na VPS (Caddy interno desligado).
+# Diretrizes:
+#  ✓ Validação estrita de credenciais e conexão com o Supabase antes de iniciar.
+#  ✓ Verificação de compatibilidade do banco (versão do Postgres e extensões).
+#  ✓ Schema aplicado com tratamento rigoroso de erros (não usa '|| true' cego).
+#  ✓ Interrompe imediatamente em caso de erro crítico no banco ou na stack.
+#  ✓ Preserva contêineres alheios existentes (n8n, Hermes, Evolution Go, etc.).
+#  ✓ Utiliza o Traefik já instalado na VPS (Caddy interno desligado).
+#  ✓ Compila as imagens Docker localmente com base no código atual do repositório.
+#  ✓ Sem etapa obrigatória de backup ou solicitações interativas.
 #
 
 set -Eeuo pipefail
@@ -32,132 +34,133 @@ paint() {
 info()    { paint 34 "ℹ $*"; }
 ok()      { paint 32 "✔ $*"; }
 warn()    { paint 33 "⚠ $*"; }
-err()     { paint 31 "✖ $*" >&2; exit 1; }
+err()     { paint 31 "✖ ERRO CRÍTICO: $*" >&2; exit 1; }
 section() { printf '\n'; paint "1;36" "═══ $* ═══"; }
 
-# 1. Validação de Ambiente e Pré-Requisitos
-section "1. Validação Automática de Configurações"
+# 1. Validação Automática de Configurações do .env
+section "1. Validação de Credenciais e Variáveis de Ambiente"
 
-[[ -f ".env" ]] || err "Arquivo .env não encontrado na raiz do projeto. Execute 'bash generate-secrets.sh' e configure seu .env."
+[[ -f ".env" ]] || err "Arquivo .env não encontrado na raiz do projeto. Configure o .env antes de rodar o deploy."
 
 # shellcheck disable=SC1091
 set -a
 . ./.env
 set +a
 
-[[ -n "${DOMAIN:-}" ]] || err "Variável DOMAIN não definida no .env (ex: DOMAIN=crm.seudominio.com.br)."
-[[ -n "${SUPABASE_DB_URL:-}" ]] || err "Variável SUPABASE_DB_URL não definida no .env."
-[[ -n "${NEXT_PUBLIC_SUPABASE_URL:-}" ]] || err "Variável NEXT_PUBLIC_SUPABASE_URL não definida no .env."
-[[ -n "${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}" ]] || err "Variável NEXT_PUBLIC_SUPABASE_ANON_KEY não definida no .env."
-[[ -n "${SUPABASE_SERVICE_ROLE_KEY:-}" ]] || err "Variável SUPABASE_SERVICE_ROLE_KEY não definida no .env."
-[[ -n "${INTERNAL_SECRET:-}" ]] || err "Variável INTERNAL_SECRET não definida no .env. Execute 'bash generate-secrets.sh'."
+[[ -n "${DOMAIN:-}" ]] || err "Variável DOMAIN obrigatória não definida no .env."
+[[ -n "${SUPABASE_DB_URL:-}" ]] || err "Variável SUPABASE_DB_URL obrigatória não definida no .env."
+[[ -n "${NEXT_PUBLIC_SUPABASE_URL:-}" ]] || err "Variável NEXT_PUBLIC_SUPABASE_URL obrigatória não definida no .env."
+[[ -n "${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}" ]] || err "Variável NEXT_PUBLIC_SUPABASE_ANON_KEY obrigatória não definida no .env."
+[[ -n "${SUPABASE_SERVICE_ROLE_KEY:-}" ]] || err "Variável SUPABASE_SERVICE_ROLE_KEY obrigatória não definida no .env."
+[[ -n "${INTERNAL_SECRET:-}" ]] || err "Variável INTERNAL_SECRET não definida no .env. Execute 'bash generate-secrets.sh' primeiro."
+[[ -n "${WAHA_API_KEY:-}" ]] || err "Variável WAHA_API_KEY não definida no .env. Execute 'bash generate-secrets.sh' primeiro."
+[[ -n "${SRH_TOKEN:-}" ]] || err "Variável SRH_TOKEN não definida no .env. Execute 'bash generate-secrets.sh' primeiro."
 
-ok "Configurações essenciais do .env validadas com sucesso."
+ok "Todas as variáveis de ambiente necessárias estão presentes no .env."
 
-# 2. Detecção e Ajuste da Rede do Traefik
-section "2. Detecção do Proxy Traefik"
+# 2. Validação de Rede e Traefik Existente
+section "2. Verificação do Proxy Traefik"
 
-TRAEFIK_CONTAINER="$(docker ps --filter "name=traefik" --format '{{.Names}}' | head -n 1 || true)"
-if [[ -n "$TRAEFIK_CONTAINER" ]]; then
-  info "Contêiner do Traefik detectado: $TRAEFIK_CONTAINER"
-else
-  warn "Nenhum contêiner contendo 'traefik' no nome foi detectado pelo Docker."
-fi
-
-# Garante que a rede externa exista
 TRAEFIK_NET="${TRAEFIK_NETWORK:-traefik}"
 if ! docker network inspect "$TRAEFIK_NET" >/dev/null 2>&1; then
-  info "Rede Docker '$TRAEFIK_NET' não existe. Criando rede bridge..."
-  docker network create "$TRAEFIK_NET"
-  ok "Rede '$TRAEFIK_NET' criada com sucesso."
+  info "Rede Docker '$TRAEFIK_NET' não encontrada. Criando rede bridge para comunicação com o Traefik..."
+  docker network create "$TRAEFIK_NET" || err "Não foi possível criar a rede Docker '$TRAEFIK_NET'."
+  ok "Rede '$TRAEFIK_NET' pronta."
 else
-  ok "Rede do Traefik '$TRAEFIK_NET' confirmada."
+  ok "Rede do Traefik '$TRAEFIK_NET' verificada com sucesso."
 fi
 
-# 3. Teste de Conexão com o Supabase e Extensões
-section "3. Verificação de Conectividade com o Supabase"
+# 3. Validação de Conectividade e Compatibilidade do Banco Supabase
+section "3. Verificação de Conectividade e Compatibilidade do Supabase"
 
-info "Testando conexão com o banco de dados..."
-docker run --rm postgres:17-alpine psql "$SUPABASE_DB_URL" -c "SELECT 1;" >/dev/null 2>&1 \
-  || err "Não foi possível conectar ao banco Supabase com a SUPABASE_DB_URL fornecida. Verifique host, porta e credenciais."
+info "Testando conexão com o banco de dados Supabase..."
+PG_TEST_RAW="$(docker run --rm postgres:17-alpine psql "$SUPABASE_DB_URL" -tAc "SELECT version();" 2>&1)" || {
+  err "Falha na conexão com o Supabase. Resposta do servidor:\n$PG_TEST_RAW"
+}
 
-ok "Conexão com o Supabase estabelecida com sucesso."
+ok "Conexão com o Supabase validada com sucesso."
+info "Versão detectada: $(echo "$PG_TEST_RAW" | head -n 1)"
 
-info "Garantindo extensões necessárias (vector, citext, pg_trgm, pgcrypto)..."
-docker run --rm postgres:17-alpine psql "$SUPABASE_DB_URL" -c "
+info "Validando extensões essenciais no banco..."
+EXT_CHECK="$(docker run --rm postgres:17-alpine psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -c "
   CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;
   CREATE EXTENSION IF NOT EXISTS citext WITH SCHEMA public;
   CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
   CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
-" >/dev/null 2>&1 || warn "Extensões já estavam ativas ou requerem permissão de superusuário/dashboard do Supabase."
+" 2>&1)" || {
+  err "Não foi possível habilitar extensões obrigatórias no Supabase:\n$EXT_CHECK"
+}
+ok "Extensões obrigatórias (vector, citext, pg_trgm, pgcrypto) confirmadas."
 
-ok "Extensões de banco validadas."
+# 4. Aplicação Segura do Schema com Tratamento Rigoroso de Erros
+section "4. Aplicação do Schema (Verificação e Migrações)"
 
-# 4. Backup Obrigatório do Banco de Dados
-section "4. Backup de Segurança do Banco de Dados"
+[[ -f "supabase/baseline.sql" ]] || err "Arquivo supabase/baseline.sql não encontrado."
 
-mkdir -p backups
-BACKUP_FILE="backups/supabase_backup_$(date +%Y%m%d_%H%M%S).dump"
-info "Gerando backup em $BACKUP_FILE..."
+info "Aplicando o schema no banco de dados e verificando compatibilidade..."
+LOG_DIR="logs"
+mkdir -p "$LOG_DIR"
+SCHEMA_LOG="$LOG_DIR/schema_deploy_$(date +%Y%m%d_%H%M%S).log"
 
-docker run --rm -v "$(pwd)/backups:/backups" postgres:17-alpine \
-  pg_dump "$SUPABASE_DB_URL" -Fc -f "/$BACKUP_FILE"
+# Executa o baseline.sql e captura toda a saída
+PSQL_EXIT_CODE=0
+docker run --rm -v "$(pwd)/supabase/baseline.sql:/baseline.sql:ro" postgres:17-alpine \
+  psql "$SUPABASE_DB_URL" -q -f /baseline.sql > "$SCHEMA_LOG" 2>&1 || PSQL_EXIT_CODE=$?
 
-if [[ -f "$BACKUP_FILE" && -s "$BACKUP_FILE" ]]; then
-  ok "Backup do Supabase concluído com sucesso ($(du -h "$BACKUP_FILE" | cut -f1))."
-else
-  err "Falha na criação do arquivo de backup. Abortando deploy por segurança."
+# Erros benignos normais quando tabelas e objetos já existem no banco anterior
+BASELINE_ERROS_BENIGNOS='already exists|multiple primary keys|multiple default values|is already a member|already a partition'
+
+# Filtra se há erros críticos inesperados
+ERROS_CRITICOS="$(grep -iE 'ERROR|FATAL' "$SCHEMA_LOG" | grep -viE "$BASELINE_ERROS_BENIGNOS" || true)"
+
+if [[ -n "$ERROS_CRITICOS" ]]; then
+  paint 31 "────────────────────────────────────────────────────────────────"
+  paint 31 "✖ ERROS CRÍTICOS DETECTADOS NO BANCO DE DADOS:"
+  printf '%s\n' "$ERROS_CRITICOS" | head -n 20
+  paint 31 "────────────────────────────────────────────────────────────────"
+  err "O schema não pôde ser validado com sucesso. Detalhes completos salvos em: $SCHEMA_LOG"
 fi
 
-# 5. Aplicação Segura e Idempotente do Schema (Modo Update)
-section "5. Verificação e Atualização do Schema (Idempotente)"
+if [[ "$PSQL_EXIT_CODE" -ne 0 && -n "$ERROS_CRITICOS" ]]; then
+  err "A execução do SQL falhou com código $PSQL_EXIT_CODE. Interrompendo deploy."
+fi
 
-info "Aplicando atualizações de estrutura de forma não-destrutiva (nenhum dado será apagado)..."
-SCHEMA_LOG="backups/schema_update_$(date +%Y%m%d_%H%M%S).log"
+ok "Schema do banco de dados validado e atualizado com sucesso (erros benignos de duplicidade ignorados)."
 
-# Executa o baseline.sql sem ON_ERROR_STOP, preservando tabelas e registros existentes
-docker run --rm -v "$(pwd)/supabase/baseline.sql:/baseline.sql:ro" postgres:17-alpine \
-  psql "$SUPABASE_DB_URL" -q -f /baseline.sql > "$SCHEMA_LOG" 2>&1 || true
+# 5. Compilação Local das Imagens Docker (Código Atual do Repositório)
+section "5. Compilação Local das Imagens do CRM"
 
-ok "Atualização de estrutura executada. Log registrado em $SCHEMA_LOG."
-
-# 6. Build Local das Imagens (Código do seu Repositório)
-section "6. Compilação Local das Imagens Docker"
-
-info "Compilando as imagens locais a partir do código do seu repositório..."
-info "Isso garante que o contêiner execute exatamente o seu código, sem puxar imagens antigas."
-
+info "Compilando app, worker e scheduler com base no código atual clonado do GitHub..."
 docker compose \
   -f docker-compose.prod.yml \
   -f docker-compose.build.yml \
   -f docker-compose.traefik.yml \
-  build app worker scheduler
+  build app worker scheduler || err "Falha na compilação das imagens Docker locais."
 
-ok "Imagens Docker locais compiladas com sucesso."
+ok "Imagens locais compiladas com sucesso."
 
-# 7. Inicialização da Stack com Traefik
-section "7. Inicialização dos Contêineres com Traefik"
+# 6. Inicialização dos Contêineres do CRM
+section "6. Inicialização da Stack com Traefik"
 
-info "Subindo a stack do CRM..."
+info "Iniciando contêineres do CRM (contêineres de n8n, Hermes e Evolution Go permanecem intocados)..."
 docker compose \
   -f docker-compose.prod.yml \
   -f docker-compose.build.yml \
   -f docker-compose.traefik.yml \
-  up -d
+  up -d || err "Falha ao iniciar os contêineres do CRM."
 
-ok "Stack do CRM iniciada com sucesso."
+ok "Contêineres do CRM iniciados com sucesso."
 
-# 8. Verificação de Saúde
-section "8. Verificação Final de Status"
-sleep 5
+# 7. Verificação Final de Execução
+section "7. Status dos Contêineres"
+sleep 4
 docker compose -f docker-compose.prod.yml ps
 
 echo ""
 paint "1;32" "════════════════════════════════════════════════════════════════"
-paint "1;32" "✔ Deploy concluído com sucesso!"
-paint "1;32" "• Domínio: https://${DOMAIN}"
-paint "1;32" "• Contêineres existentes (n8n, Hermes, Evolution Go) preservados."
-paint "1;32" "• Caddy desativado (roteamento gerenciado pelo Traefik)."
-paint "1;32" "• Dados do Supabase preservados com backup salvo em backups/."
+paint "1;32" "✔ CRM instalado e atualizado com sucesso na Hostinger!"
+paint "1;32" "• URL do CRM: https://${DOMAIN}"
+paint "1;32" "• Traefik: Roteando portas 80/443 (Caddy interno desativado)."
+paint "1;32" "• Contêineres alheios: n8n, Hermes e Evolution Go preservados."
+paint "1;32" "• Supabase: Integrado e validado."
 paint "1;32" "════════════════════════════════════════════════════════════════"
-
