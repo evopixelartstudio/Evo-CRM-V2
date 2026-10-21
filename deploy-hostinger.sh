@@ -160,3 +160,4 @@ paint "1;32" "• Contêineres existentes (n8n, Hermes, Evolution Go) preservado
 paint "1;32" "• Caddy desativado (roteamento gerenciado pelo Traefik)."
 paint "1;32" "• Dados do Supabase preservados com backup salvo em backups/."
 paint "1;32" "════════════════════════════════════════════════════════════════"
+
