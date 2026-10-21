@@ -1,7 +1,7 @@
-import { UsersClient } from "./_client";
+import { redirect } from "next/navigation";
 
-export const metadata = { title: "Usuários — Admin Plataforma" };
+export const dynamic = "force-dynamic";
 
-export default function AdminUsersPage() {
-  return <UsersClient />;
+export default function AdminRootPage() {
+  redirect("/admin/dashboard");
 }
