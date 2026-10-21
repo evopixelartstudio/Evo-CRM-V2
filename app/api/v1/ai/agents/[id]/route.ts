@@ -1,14 +1,8 @@
 import { requireSupportWrite } from "@/lib/impersonate/support";
 /**
- * GET  /api/v1/ai/agents/:id/versions  — list (manager+).
- * POST /api/v1/ai/agents/:id/versions  — create new draft (admin) = "Save".
- *
- * Spec 10 §4.4. Calcula próximo version_number = max(version_number)+1 com
- * unique constraint cobrindo a corrida; em caso de 23505, tenta novamente uma
- * vez.
- *
- * Auth: sessão de navegador OU Bearer `dsk_...` (api_tokens), resolvidos por
- * `lib/api/auth-dual.ts` — a org sai do JWT (sessão) ou da linha do token.
+ * GET    /api/v1/ai/agents/:id — busca detalhes do agente (manager+).
+ * PATCH  /api/v1/ai/agents/:id — atualiza agente (manager+ ou admin para mcp_externo).
+ * DELETE /api/v1/ai/agents/:id — arquiva agente (admin).
  */
 import { randomUUID } from "node:crypto";
 import { type NextRequest } from "next/server";
@@ -16,35 +10,13 @@ import { type NextRequest } from "next/server";
 import { resolveAuthDual, tetoDeEscritaDoToken } from "@/lib/api/auth-dual";
 import { ok, fail } from "@/lib/api/wrappers";
 import { audit } from "@/lib/audit";
-import { createAdminClient } from "@/lib/supabase/admin";
-import { codigoDoEscopo, mensagemDoEscopo, validarEscopoDaVersao } from "@/lib/ai/agents/escopo";
-import { versionCreateSchema } from "@/lib/ai/agents/validation";
-import { lerAmbiente } from "@/lib/instalacao/ambiente";
-import { traduzir } from "@/lib/i18n/dicionario";
+import { agentPatchSchema } from "@/lib/ai/guardrails-schema";
 
 export const dynamic = "force-dynamic";
-
-const VERSION_COLUMNS =
-  "id, organization_id, agent_id, version_number, system_prompt, provider, model, credential_id, tool_ids, trigger_config, channel_session_id, max_steps, token_budget, cost_budget_cents, history_message_window, history_token_window, handoff_keywords, handoff_tool_enabled, handoff_legal_enabled, proposal_ai_draft_enabled, cases_enabled, split_messages, split_max_chars, followup, operator_enabled, operator_model, operator_tool_ids, status, published_at, superseded_at, created_at, created_by,pipeline_ids,knowledge_source_ids,provisioning_origin,inbound_debounce_ms";
 
 const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type Ctx = { params: Promise<{ id: string }> };
-
-async function assertAgentInOrg(
-  agentId: string,
-  orgId: string,
-): Promise<{ ok: true; kind: string } | { ok: false }> {
-  const admin = createAdminClient();
-  const { data } = await admin
-    .from("ai_agents")
-    .select("id, kind, archived_at")
-    .eq("id", agentId)
-    .eq("organization_id", orgId)
-    .maybeSingle();
-  if (!data || data.archived_at) return { ok: false };
-  return { ok: true, kind: (data as { kind: string }).kind };
-}
 
 export async function GET(req: NextRequest, ctx: Ctx): Promise<Response> {
   const requestId = randomUUID();
@@ -61,17 +33,128 @@ export async function GET(req: NextRequest, ctx: Ctx): Promise<Response> {
   const { organizationId, supabase } = authz;
 
   const { data, error } = await supabase
-    .from("ai_agent_versions")
-    .select(VERSION_COLUMNS)
+    .from("ai_agents")
+    .select("*")
+    .eq("id", id)
     .eq("organization_id", organizationId)
-    .eq("agent_id", id)
-    .order("version_number", { ascending: false });
+    .maybeSingle();
 
-  if (error) return fail("internal_error", "Erro ao listar versions.", 500, { requestId });
-  return ok(data ?? [], { requestId });
+  if (error) return fail("internal_error", "Erro ao buscar agente.", 500, { requestId });
+  if (!data) return fail("not_found", "Agente não encontrado.", 404, { requestId });
+
+  return ok(data, { requestId });
 }
 
-export async function POST(req: NextRequest, ctx: Ctx): Promise<Response> {
+export async function PATCH(req: NextRequest, ctx: Ctx): Promise<Response> {
+  const supportDenied = await requireSupportWrite();
+  if (supportDenied) return supportDenied;
+
+  const requestId = randomUUID();
+  const { id } = await ctx.params;
+  if (!UUID_RX.test(id)) return fail("invalid_request", "id inválido.", 400, { requestId });
+
+  const authz = await resolveAuthDual(req, {
+    requestId,
+    resource: "ai_agents",
+    role: "manager",
+    scope: "mcp:write",
+  });
+  if (!authz.ok) return authz.response;
+  const { organizationId, supabase, actor } = authz;
+
+  const teto = await tetoDeEscritaDoToken(authz, "ai_agents", requestId);
+  if (teto) return teto;
+
+  let raw: unknown;
+  try {
+    raw = await req.json();
+  } catch {
+    return fail("invalid_request", "JSON inválido.", 400, { requestId });
+  }
+
+  const parsed = agentPatchSchema.safeParse(raw);
+  if (!parsed.success) {
+    return fail("validation_failed", "Campos inválidos.", 422, {
+      requestId,
+      details: parsed.error.flatten(),
+    });
+  }
+
+  // Permissão admin para mcp_externo_no_atendimento
+  if (parsed.data.config?.mcp_externo_no_atendimento !== undefined) {
+    const adminCheck = await resolveAuthDual(req, {
+      requestId,
+      resource: "ai_agents",
+      role: "admin",
+      scope: "mcp:write",
+    });
+    if (!adminCheck.ok) return adminCheck.response;
+  }
+
+  // Buscar agente existente para validações de conflito e merge
+  const { data: agent, error: fetchErr } = await supabase
+    .from("ai_agents")
+    .select("*")
+    .eq("id", id)
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+
+  if (fetchErr) return fail("internal_error", "Erro ao buscar agente.", 500, { requestId });
+  if (!agent) return fail("not_found", "Agente não encontrado.", 404, { requestId });
+
+  // Recusa editar system_prompt diretamente quando o agente já possui versão publicada
+  if (parsed.data.system_prompt !== undefined && agent.published_version_id) {
+    return fail(
+      "state_conflict",
+      "Este agente possui uma versão publicada. Para editar o prompt, crie e publique uma nova versão.",
+      409,
+      { requestId },
+    );
+  }
+
+  // Montar payload de atualização
+  const updateData: Record<string, unknown> = {
+    updated_at: new Date().toISOString(),
+  };
+
+  if (parsed.data.operation_mode !== undefined) updateData.operation_mode = parsed.data.operation_mode;
+  if (parsed.data.paused_at !== undefined) updateData.paused_at = parsed.data.paused_at;
+  if (parsed.data.name !== undefined) updateData.name = parsed.data.name;
+  if (parsed.data.description !== undefined) updateData.description = parsed.data.description;
+  if (parsed.data.is_active !== undefined) updateData.is_active = parsed.data.is_active;
+  if (parsed.data.model !== undefined) updateData.model = parsed.data.model;
+  if (parsed.data.system_prompt !== undefined) updateData.system_prompt = parsed.data.system_prompt;
+  if (parsed.data.guardrails !== undefined) updateData.guardrails = parsed.data.guardrails;
+
+  if (parsed.data.config !== undefined) {
+    const configAtual = (agent.config as Record<string, unknown>) ?? {};
+    updateData.config = { ...configAtual, ...parsed.data.config };
+  }
+
+  const { data: updated, error: updErr } = await supabase
+    .from("ai_agents")
+    .update(updateData)
+    .eq("id", id)
+    .eq("organization_id", organizationId)
+    .select("*")
+    .single();
+
+  if (updErr) return fail("internal_error", "Erro ao atualizar agente.", 500, { requestId });
+
+  void audit({
+    action: "ai_agent.updated",
+    actorUserId: actor.type === "user" ? actor.id : null,
+    organizationId,
+    resourceType: "ai_agent",
+    resourceId: id,
+    requestId,
+    metadata: updateData,
+  });
+
+  return ok(updated, { requestId });
+}
+
+export async function DELETE(req: NextRequest, ctx: Ctx): Promise<Response> {
   const supportDenied = await requireSupportWrite();
   if (supportDenied) return supportDenied;
 
@@ -86,137 +169,28 @@ export async function POST(req: NextRequest, ctx: Ctx): Promise<Response> {
     scope: "mcp:write",
   });
   if (!authz.ok) return authz.response;
-  const t = (texto: string) => traduzir(texto, authz.idioma ?? "pt-BR");
-  const { organizationId, actor, apiTokenId } = authz;
+  const { organizationId, supabase, actor } = authz;
 
   const teto = await tetoDeEscritaDoToken(authz, "ai_agents", requestId);
   if (teto) return teto;
 
-  const authUserId = actor.type === "user" ? actor.id : null;
+  const now = new Date().toISOString();
+  const { error } = await supabase
+    .from("ai_agents")
+    .update({ archived_at: now })
+    .eq("id", id)
+    .eq("organization_id", organizationId);
 
-  let raw: unknown;
-  try {
-    raw = await req.json();
-  } catch {
-    return fail("invalid_request", t("Body JSON inválido."), 400, { requestId });
-  }
+  if (error) return fail("internal_error", "Erro ao arquivar agente.", 500, { requestId });
 
-  const parsed = versionCreateSchema.safeParse(raw);
-  if (!parsed.success) {
-    return fail("validation_failed", t("Campos inválidos."), 422, {
-      requestId,
-      details: parsed.error.flatten(),
-    });
-  }
-  const v = parsed.data;
+  void audit({
+    action: "ai_agent.archived",
+    actorUserId: actor.type === "user" ? actor.id : null,
+    organizationId,
+    resourceType: "ai_agent",
+    resourceId: id,
+    requestId,
+  });
 
-  const agentCheck = await assertAgentInOrg(id, organizationId);
-  if (!agentCheck.ok) {
-    return fail("not_found", t("Agent não encontrado."), 404, { requestId });
-  }
-
-  const admin = createAdminClient();
-
-  // Ordering: insert with retry on 23505 (race com unique(agent_id,version_number)).
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const { data: maxRow } = await admin
-      .from("ai_agent_versions")
-      .select("version_number")
-      .eq("agent_id", id)
-      .eq("organization_id", organizationId)
-      .order("version_number", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    // ⚠️ FALHA FECHADA: `credential_id: null` significa "usa a chave da
-    // instalação". Se ela não existir para este provedor, a versão seria
-    // publicada para morrer em toda mensagem — e o dono só descobriria com o
-    // primeiro cliente. O schema valida FORMA; quem conhece o ambiente do
-    // servidor é esta rota.
-    if (v.credential_id === null && lerAmbiente().chavesDeProvedor[v.provider] !== true) {
-      return fail(
-        "credential_required",
-        `Esta instalação não tem chave de ${v.provider} no ambiente. Cadastre uma chave em IA › Credenciais ou escolha outra empresa de inteligência artificial.`,
-        422,
-        { requestId },
-      );
-    }
-
-    // O escopo aponta para coisas que EXISTEM nesta organização. Sem esta
-    // conferência, um id de outra organização (ou de um material apagado) entra
-    // no array, a versão é publicada, e o assistente não acha nada — sem erro,
-    // com a tela mostrando a marcação como se estivesse valendo.
-    const escopo = await validarEscopoDaVersao(admin, organizationId, {
-      provider: v.provider,
-      pipeline_ids: v.pipeline_ids,
-      knowledge_source_ids: v.knowledge_source_ids,
-      credential_id: v.credential_id,
-      channel_session_id: v.channel_session_id,
-    });
-    if (!escopo.ok) {
-      return fail(codigoDoEscopo(escopo), mensagemDoEscopo(escopo), 422, { requestId });
-    }
-
-    const nextNumber = (maxRow?.version_number ?? 0) + 1;
-
-    const { data, error } = await admin
-      .from("ai_agent_versions")
-      .insert({
-        organization_id: organizationId,
-        agent_id: id,
-        version_number: nextNumber,
-        system_prompt: v.system_prompt,
-        provider: v.provider,
-        model: v.model,
-        credential_id: v.credential_id,
-        tool_ids: v.tool_ids,
-        trigger_config: v.trigger_config ?? undefined,
-        channel_session_id: v.channel_session_id,
-        max_steps: v.max_steps,
-        token_budget: v.token_budget,
-        cost_budget_cents: v.cost_budget_cents,
-        history_message_window: v.history_message_window,
-        history_token_window: v.history_token_window,
-        handoff_keywords: v.handoff_keywords,
-        handoff_tool_enabled: v.handoff_tool_enabled,
-        handoff_legal_enabled: v.handoff_legal_enabled,
-        proposal_ai_draft_enabled: v.proposal_ai_draft_enabled,
-        cases_enabled: v.cases_enabled,
-        split_messages: v.split_messages,
-        split_max_chars: v.split_max_chars,
-        inbound_debounce_ms: v.inbound_debounce_ms,
-        followup: v.followup,
-        // Mesmo descarte silencioso da rota de criação de agente: o corpo aceita
-        // e o INSERT ignorava. Criar uma versão nova pela API com escopo ou
-        // acervo produzia uma versão vazia, com 201.
-        operator_enabled: v.operator_enabled,
-        operator_model: v.operator_model,
-        operator_tool_ids: v.operator_tool_ids,
-        pipeline_ids: v.pipeline_ids,
-        knowledge_source_ids: v.knowledge_source_ids,
-        status: "draft",
-        created_by: authUserId,
-      })
-      .select(VERSION_COLUMNS)
-      .single();
-
-    if (!error && data) {
-      void audit({
-        action: "ai_agent.version_created",
-        actorUserId: authUserId,
-        actorApiTokenId: apiTokenId ?? null,
-        organizationId,
-        resourceType: "ai_agent_version",
-        resourceId: data.id,
-        requestId,
-        metadata: { agent_id: id, version_number: nextNumber },
-      });
-      return ok(data, { status: 201, requestId });
-    }
-    if (error?.code !== "23505") {
-      return fail("internal_error", "Erro ao criar version.", 500, { requestId });
-    }
-  }
-
-  return fail("internal_error", "Conflito de versionamento — tente novamente.", 500, { requestId });
+  return ok({ id, archived: true }, { requestId });
 }

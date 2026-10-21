@@ -4,12 +4,12 @@ import { redirect } from "next/navigation";
 import { requireAuth, resolveActiveOrg } from "@/lib/auth/server";
 import { ROLE_RANK } from "@/lib/auth/types";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { alineasDoArt15Visiveis } from "@/lib/legal/art15";
+import { alineasDoArt15Visiveis, art15DoControlador } from "@/lib/legal/art15";
 import type { TenantInput } from "@/lib/schemas/settings";
 
 import { TenantForm } from "./_form";
 import { InterfaceDaEmpresaForm } from "./_interface";
-import { Art15Form } from "./_art15";
+import { Art15Form, type AlineasPreenchidas } from "./_art15";
 import { ZonaDePerigoDaOrganizacao } from "./_danger-zone";
 
 export const dynamic = "force-dynamic";
@@ -48,6 +48,13 @@ export default async function TenantSettingsPage() {
   const podeVerArt15 = alineasDoArt15Visiveis(org.country);
   const isAdmin = ROLE_RANK[activeOrg.role] >= ROLE_RANK.admin;
 
+  const art15 = art15DoControlador(org.settings);
+  const initialArt15: AlineasPreenchidas = {
+    finalidades: art15.finalidades ?? "",
+    destinatarios: art15.destinatarios ?? "",
+    prazo_conservacao: art15.prazo_conservacao ?? "",
+  };
+
   return (
     <div className="flex h-full flex-col gap-6 p-6">
       <header>
@@ -59,7 +66,7 @@ export default async function TenantSettingsPage() {
 
       <TenantForm initial={initial} />
       <InterfaceDaEmpresaForm initial={org.interface_settings} role={activeOrg.role} />
-      {podeVerArt15 && <Art15Form />}
+      {podeVerArt15 && <Art15Form initial={initialArt15} pais={org.country} />}
       {isAdmin && <ZonaDePerigoDaOrganizacao displayName={org.display_name} />}
     </div>
   );

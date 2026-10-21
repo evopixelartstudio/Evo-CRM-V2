@@ -1,18 +1,26 @@
+import { requireSupportWrite } from "@/lib/impersonate/support";
 /**
- * GET /api/v1/automation-rules/runs?limit=50 — histórico de execuções da ORG
- * inteira (cross-rule), desc. Usado pela aba Atividade (timeline global).
+ * GET  /api/v1/automation-rules — lista as regras de automação da org ativa.
+ * POST /api/v1/automation-rules — cria uma regra de automação.
  */
 import { randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
 
-import { ok, fail } from "@/lib/api/wrappers";
+import { fail, ok } from "@/lib/api/wrappers";
+import { audit } from "@/lib/audit";
 import { requireRole } from "@/lib/auth/require-role";
+import {
+  MENSAGEM_CAMPO_DE_DATA_DO_CONTATO,
+  campoDoGatilhoDeDataEhDoContato,
+} from "@/lib/automation/campo-do-gatilho-de-data";
+import { autoriaDaMudanca } from "@/lib/operacao/autoria";
+import { createAutomationRuleSchema, acoesQueFechamLaco, MENSAGEM_DO_LACO_DE_LEAD } from "@/lib/schemas/webhooks";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import { encryptRuleActionSecrets } from "@/lib/webhooks/secrets";
+import { traduzir } from "@/lib/i18n/dicionario";
 
 export const dynamic = "force-dynamic";
-
-const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 100;
 
 export async function GET(req: NextRequest): Promise<Response> {
   const requestId = randomUUID();
@@ -20,17 +28,108 @@ export async function GET(req: NextRequest): Promise<Response> {
   if (!authz.ok) return authz.response;
   const { org: activeOrg } = authz;
 
-  const rawLimit = Number(req.nextUrl.searchParams.get("limit"));
-  const limit = Math.min(Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : DEFAULT_LIMIT, MAX_LIMIT);
-
   const supabase = await createClient();
   const { data, error } = await supabase
-    .from("automation_rule_runs")
-    .select("*, automation_rules(name)")
+    .from("automation_rules")
+    .select("*")
     .eq("organization_id", activeOrg.orgId)
-    .order("created_at", { ascending: false })
-    .limit(limit);
-  if (error) return fail("internal_error", error.message, 500, { requestId });
+    .order("created_at", { ascending: false });
 
+  if (error) return fail("internal_error", error.message, 500, { requestId });
   return ok(data ?? [], { requestId });
+}
+
+export async function POST(req: NextRequest): Promise<Response> {
+  const supportDenied = await requireSupportWrite();
+  if (supportDenied) return supportDenied;
+
+  const requestId = randomUUID();
+  const authz = await requireRole("manager", { requestId, resource: "automation_rules" });
+  if (!authz.ok) return authz.response;
+  const t = (texto: string) => traduzir(texto, authz.user.idioma);
+  const { user, org: activeOrg } = authz;
+
+  let raw: unknown = {};
+  try {
+    raw = await req.json();
+  } catch {
+    raw = {};
+  }
+  const parsed = createAutomationRuleSchema.safeParse(raw);
+  if (!parsed.success) {
+    return fail("invalid_request", t("Dados inválidos."), 400, {
+      requestId,
+      details: parsed.error.flatten(),
+    });
+  }
+
+  if (acoesQueFechamLaco(parsed.data.trigger_event, parsed.data.actions).length) {
+    return fail("invalid_request", t(MENSAGEM_DO_LACO_DE_LEAD), 400, { requestId });
+  }
+
+  const supabase = await createClient();
+
+  const webhookSourceId = parsed.data.trigger_config?.webhook_source_id;
+  if (typeof webhookSourceId === "string") {
+    const { data: source, error: sourceError } = await supabase
+      .from("webhook_sources")
+      .select("id")
+      .eq("id", webhookSourceId)
+      .eq("organization_id", activeOrg.orgId)
+      .maybeSingle();
+    if (sourceError) return fail("internal_error", sourceError.message, 500, { requestId });
+    if (!source) {
+      return fail("invalid_request", t("A fonte escolhida não pertence a esta empresa."), 422, { requestId });
+    }
+  }
+
+  const campoDeData = await campoDoGatilhoDeDataEhDoContato(
+    supabase,
+    activeOrg.orgId,
+    parsed.data.trigger_event,
+    parsed.data.trigger_config,
+  );
+  if ("erro" in campoDeData) return fail("internal_error", campoDeData.erro, 500, { requestId });
+  if (campoDeData.doContato) {
+    return fail("invalid_request", t(MENSAGEM_CAMPO_DE_DATA_DO_CONTATO), 422, { requestId });
+  }
+
+  const safeActions = await encryptRuleActionSecrets(createAdminClient(), parsed.data.actions);
+  if (safeActions === null) {
+    return fail(
+      "encryption_unavailable",
+      t(
+        "Não foi possível guardar o segredo do webhook com segurança: a chave de cifra desta instalação não está ativa. Quem administra o servidor resolve rodando o update.sh, que gera e ativa a chave.",
+      ),
+      422,
+      { requestId },
+    );
+  }
+
+  const record = {
+    ...parsed.data,
+    actions: safeActions,
+    organization_id: activeOrg.orgId,
+    is_active: false,
+    ...autoriaDaMudanca({ type: "user", id: user.id, role: activeOrg.role }),
+  };
+
+  const { data: created, error: insertErr } = await supabase
+    .from("automation_rules")
+    .insert(record)
+    .select("*")
+    .single();
+
+  if (insertErr) return fail("internal_error", insertErr.message, 500, { requestId });
+
+  void audit({
+    action: "automation.rule_created",
+    actorUserId: user.id,
+    organizationId: activeOrg.orgId,
+    resourceType: "automation_rule",
+    resourceId: created.id,
+    requestId,
+  });
+
+  return ok(created, { requestId, status: 201 });
 }
