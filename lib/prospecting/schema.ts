@@ -81,6 +81,14 @@ export const prospectingInputSchema = z.discriminatedUnion("action", [
     })
     .strict(),
   z.object({ action: z.literal("discard_unselected"), id: z.string().uuid() }).strict(),
+  z.object({ action: z.literal("delete_campaign"), id: z.string().uuid() }).strict(),
+  z
+    .object({
+      action: z.literal("contact_single"),
+      id: z.string().uuid(),
+      candidate_id: z.string().uuid(),
+    })
+    .strict(),
 ]);
 export type CampaignConfig = z.infer<typeof campaignConfigSchema>;
 export type CampaignPace = Pick<CampaignConfig, "daily_limit" | "interval_minutes">;

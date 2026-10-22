@@ -32,6 +32,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useT } from "@/hooks/i18n/useT";
+import { HermesServiceAccountCard } from "./HermesServiceAccountCard";
 
 /**
  * `mcp:read`/`mcp:write` faltavam nesta lista, e sem eles NENHUMA ferramenta
@@ -114,7 +115,9 @@ export function ApiTokensClient() {
 
   return (
     <>
-      <div className="flex sm:justify-end">
+      <HermesServiceAccountCard />
+
+      <div className="flex sm:justify-end mt-8">
         <Button onClick={() => setCreateOpen(true)} className="w-full sm:w-auto">
           {t("Criar token")}
         </Button>

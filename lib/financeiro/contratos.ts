@@ -39,6 +39,10 @@ export const criarContratoSchema = z
     installments_count: z.coerce.number().int().min(1).max(120).default(1),
     gerar_cobrancas: z.boolean().default(true),
     gerar_cobrancas_automaticas: z.boolean().optional(),
+    pagamento_ja_realizado: z.boolean().default(false),
+    data_pagamento_realizada: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Data de pagamento inválida.").nullish(),
+    forma_pagamento: z.string().nullish(),
+    account_id: z.string().uuid().nullish(),
   })
   .transform((data) => {
     const nome = data.service_name ?? data.title ?? "Serviço sem título";
@@ -52,6 +56,7 @@ export const criarContratoSchema = z
       amount_cents: valor,
       gerar_cobrancas: auto,
       gerar_cobrancas_automaticas: auto,
+      pagamento_ja_realizado: data.pagamento_ja_realizado ?? false,
     };
   });
 

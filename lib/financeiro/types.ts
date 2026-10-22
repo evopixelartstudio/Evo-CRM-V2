@@ -135,6 +135,7 @@ export interface MetricasDashboardFinanceiro {
   resultado_cents: number;
   clientes_ativos: number;
   clientes_inadimplentes: number;
+  contratos_ativos?: number;
   contratos_recorrentes_ativos: number;
   crescimento_receita_pct: number;
   cancelamentos_churn_qtd: number;

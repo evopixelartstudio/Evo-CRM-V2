@@ -151,7 +151,7 @@ describe("Deduplicação de Contatos (lib/contacts/deduplicacao.ts)", () => {
     });
 
     expect(updateMock).toHaveBeenCalled();
-    const patchEnviado = updateMock.mock.calls[0][0];
+    const patchEnviado = updateMock.mock.calls[0]![0];
 
     // Nome e telefone já existiam: NUNCA sobrescreve
     expect(patchEnviado.name).toBeUndefined();

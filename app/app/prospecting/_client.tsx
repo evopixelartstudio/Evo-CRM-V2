@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { MessageCircle, Trash2 } from "lucide-react";
 import { apiClient } from "@/lib/api/client";
 import { useT } from "@/hooks/i18n/useT";
 import {
@@ -115,6 +116,8 @@ export function ProspectingClient() {
   // As desmarcadas ficam escondidas por padrão; este botão só decide se aparecem.
   const [mostrarDesmarcadas, setMostrarDesmarcadas] = useState(false);
   const [confirmandoExclusao, setConfirmandoExclusao] = useState(false);
+  const [excluindoCampanhaId, setExcluindoCampanhaId] = useState<string | null>(null);
+  const [callingCandidateId, setCallingCandidateId] = useState<string | null>(null);
   // Edição do ritmo de uma campanha PAUSADA; vale para uma campanha por vez.
   const [ritmo, setRitmo] = useState<{
     campaignId: string;
@@ -275,6 +278,57 @@ export function ProspectingClient() {
       t("Empresas desmarcadas excluídas."),
     );
     if (excluiu) setConfirmandoExclusao(false);
+  }
+  async function excluirCampanha(id: string) {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await apiClient.post("/api/v1/prospecting", {
+        action: "delete_campaign",
+        id,
+      });
+      if (selected === id) {
+        setSelected(null);
+      }
+      setExcluindoCampanhaId(null);
+      await query.refetch();
+      setNotice(t("Campanha excluída com sucesso."));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("Não foi possível excluir a campanha."));
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function chamarNoWhatsApp(candidate: Candidate) {
+    if (!campaign) return;
+    setCallingCandidateId(candidate.id);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await apiClient.post<{
+        data: {
+          whatsapp_url: string;
+          contact_id: string;
+          lead_id: string;
+          stage_id: string;
+        };
+      }>("/api/v1/prospecting", {
+        action: "contact_single",
+        id: campaign.id,
+        candidate_id: candidate.id,
+      });
+
+      await query.refetch();
+      if (res?.data?.whatsapp_url) {
+        window.open(res.data.whatsapp_url, "_blank", "noopener,noreferrer");
+      }
+      setNotice(t("Lead criado no funil em 'Primeiro Contato' e WhatsApp aberto."));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("Não foi possível chamar no WhatsApp."));
+    } finally {
+      setCallingCandidateId(null);
+    }
   }
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 md:p-8">
@@ -453,23 +507,71 @@ export function ProspectingClient() {
             <h2 className="mb-3 text-sm font-semibold">{t("Suas campanhas")}</h2>
             <div className="space-y-2">
               {data?.campaigns.map((c) => (
-                <button
+                <div
                   key={c.id}
-                  type="button"
-                  onClick={() => {
-                    setSelected(c.id);
-                    setNotice(null);
-                    // A confirmação de exclusão vale para UMA campanha: ao trocar, ela some.
-                    setConfirmandoExclusao(false);
-                    setMostrarDesmarcadas(false);
-                  }}
-                  className={`w-full rounded-lg border p-3 text-left ${campaign?.id === c.id ? "border-primary bg-primary/5" : "bg-card"}`}
+                  className={`group relative flex flex-col rounded-lg border transition-colors ${
+                    campaign?.id === c.id ? "border-primary bg-primary/5" : "bg-card hover:bg-muted/50"
+                  }`}
                 >
-                  <span className="block text-sm font-medium">{c.name}</span>
-                  <span className="mt-1 block text-xs text-muted-foreground">
-                    {t(labels[c.status] ?? c.status)} · {c.result_count} {t("empresas")}
-                  </span>
-                </button>
+                  <div className="flex items-center justify-between p-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelected(c.id);
+                        setNotice(null);
+                        setConfirmandoExclusao(false);
+                        setMostrarDesmarcadas(false);
+                      }}
+                      className="min-w-0 flex-1 text-left"
+                    >
+                      <span className="block truncate text-sm font-medium">{c.name}</span>
+                      <span className="mt-1 block text-xs text-muted-foreground">
+                        {t(labels[c.status] ?? c.status)} · {c.result_count} {t("empresas")}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      title={t("Excluir campanha")}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelected(c.id);
+                        setExcluindoCampanhaId(excluindoCampanhaId === c.id ? null : c.id);
+                      }}
+                      className="ml-2 rounded p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                  {excluindoCampanhaId === c.id && (
+                    <div className="border-t border-destructive/20 bg-destructive/5 p-2 text-xs">
+                      <p className="mb-1.5 font-medium text-destructive">
+                        {t("Excluir campanha? (Contatos criados no CRM são mantidos)")}
+                      </p>
+                      <div className="flex gap-2">
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          disabled={busy}
+                          onClick={() => void excluirCampanha(c.id)}
+                        >
+                          {t("Sim, excluir")}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          disabled={busy}
+                          onClick={() => setExcluindoCampanhaId(null)}
+                        >
+                          {t("Cancelar")}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               ))}
             </div>
           </section>
@@ -498,7 +600,49 @@ export function ProspectingClient() {
                         : ""}
                     </p>
                   </div>
-                  <Badge variant="outline">{t(labels[campaign.status] ?? campaign.status)}</Badge>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="outline">{t(labels[campaign.status] ?? campaign.status)}</Badge>
+                    {excluindoCampanhaId === campaign.id ? (
+                      <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-1.5 text-xs">
+                        <span className="font-medium text-destructive">
+                          {t("Excluir esta campanha?")}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          disabled={busy}
+                          onClick={() => void excluirCampanha(campaign.id)}
+                        >
+                          {t("Confirmar")}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          disabled={busy}
+                          onClick={() => setExcluindoCampanhaId(null)}
+                        >
+                          {t("Cancelar")}
+                        </Button>
+                      </div>
+                    ) : (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 gap-1.5 text-xs text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                        disabled={busy}
+                        onClick={() => setExcluindoCampanhaId(campaign.id)}
+                        title={t("Excluir campanha")}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        {t("Excluir")}
+                      </Button>
+                    )}
+                  </div>
                 </div>
                 {campaign.error && (
                   <p role="alert" className="mt-4 rounded-md bg-destructive/10 p-3 text-sm">
@@ -1192,14 +1336,38 @@ export function ProspectingClient() {
                               )}
                             </td>
                             <td className="p-4 align-top">
-                              {c.conversation_id && (
-                                <Link
-                                  className="underline"
-                                  href={`/app/inbox?id=${c.conversation_id}`}
-                                >
-                                  {t("Abrir no Inbox")}
-                                </Link>
-                              )}
+                              <div className="flex flex-col gap-2">
+                                {c.data.phone ? (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-8 w-fit gap-1.5 border-emerald-500/40 bg-emerald-50/50 text-emerald-700 hover:bg-emerald-100 hover:text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-400 dark:hover:bg-emerald-900/40 text-xs font-medium"
+                                    disabled={busy || callingCandidateId === c.id}
+                                    onClick={() => void chamarNoWhatsApp(c)}
+                                    title={t(
+                                      "Chamar no WhatsApp e mover automaticamente para Primeiro Contato no funil",
+                                    )}
+                                  >
+                                    <MessageCircle className="h-3.5 w-3.5" />
+                                    {callingCandidateId === c.id
+                                      ? t("Chamando…")
+                                      : t("Chamar no WhatsApp")}
+                                  </Button>
+                                ) : (
+                                  <span className="text-xs italic text-muted-foreground">
+                                    {t("Sem telefone")}
+                                  </span>
+                                )}
+                                {c.conversation_id && (
+                                  <Link
+                                    className="text-xs text-primary underline hover:text-primary/80"
+                                    href={`/app/inbox?id=${c.conversation_id}`}
+                                  >
+                                    {t("Abrir no Inbox")}
+                                  </Link>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         ))}

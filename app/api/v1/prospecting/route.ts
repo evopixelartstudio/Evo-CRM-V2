@@ -14,7 +14,9 @@ import {
   activateCampaign,
   adjustPace,
   configureCredential,
+  contactSingleCandidate,
   createSearch,
+  deleteCampaign,
   descartarDesmarcadas,
   selecionarNaFila,
   validateConfig,
@@ -187,6 +189,21 @@ export async function POST(req: NextRequest) {
       // O histórico precisa dizer QUANTAS linhas saíram: apagar é o único gesto desta rota
       // que não tem volta, e "alguém excluiu" sem número não deixa conferir nada depois.
       auditMetadata = { operation: body.action, discarded: descarte.discarded };
+    } else if (body.action === "delete_campaign") {
+      const del = await deleteCampaign(pool, org, body.id);
+      result = del;
+      auditMetadata = { operation: body.action, campaign_id: body.id, name: del.name };
+    } else if (body.action === "contact_single") {
+      const single = await contactSingleCandidate(pool, admin, org, body.id, body.candidate_id);
+      result = single;
+      auditMetadata = {
+        operation: body.action,
+        campaign_id: body.id,
+        candidate_id: body.candidate_id,
+        lead_id: single.lead_id,
+        contact_id: single.contact_id,
+        stage_id: single.stage_id,
+      };
     } else {
       result = await withProspectingLock(pool, org, async (db) => {
         const c = (
@@ -225,6 +242,48 @@ export async function POST(req: NextRequest) {
       requestId,
     });
     return ok(result, { requestId, headers });
+  } catch (error) {
+    return failure(error, requestId);
+  }
+}
+
+export async function DELETE(req: NextRequest) {
+  const support = await requireSupportWrite();
+  if (support) return support;
+  const requestId = randomUUID();
+  const auth = await resolveAuthDual(req, {
+    requestId,
+    resource: "prospecting",
+    role: "admin",
+    scope: "mcp:write",
+  });
+  if (!auth.ok) return auth.response;
+  const teto = await tetoDeEscritaDoToken(auth, "prospecting", requestId);
+  if (teto) return teto;
+
+  const id = req.nextUrl.searchParams.get("id");
+  if (!id) {
+    return fail("validation_failed", "Informe o id da campanha para exclusão.", 422, {
+      requestId,
+      headers,
+    });
+  }
+
+  const org = auth.organizationId;
+  try {
+    const pool = getRequestPool();
+    const del = await deleteCampaign(pool, org, id);
+    await audit({
+      action: "prospecting.changed",
+      organizationId: org,
+      actorUserId: auth.actor.type === "user" ? auth.actor.id : null,
+      actorApiTokenId: auth.apiTokenId ?? null,
+      resourceType: "prospecting",
+      resourceId: id,
+      metadata: { operation: "delete_campaign", id, name: del.name },
+      requestId,
+    });
+    return ok(del, { requestId, headers });
   } catch (error) {
     return failure(error, requestId);
   }

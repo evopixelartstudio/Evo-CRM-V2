@@ -14,20 +14,36 @@ export async function GET(req: NextRequest): Promise<Response> {
   if (!authz.ok) return authz.response;
 
   const url = new URL(req.url);
-  // Período padrão: mês atual
   const agora = new Date();
   const primeiroDiaMes = new Date(agora.getFullYear(), agora.getMonth(), 1).toISOString().split("T")[0] as string;
   const ultimoDiaMes = new Date(agora.getFullYear(), agora.getMonth() + 1, 0).toISOString().split("T")[0] as string;
 
-  const de = url.searchParams.get("de") || primeiroDiaMes;
-  const ate = url.searchParams.get("ate") || ultimoDiaMes;
+  const tipoPeriodo = url.searchParams.get("periodo");
+  let de = url.searchParams.get("de");
+  let ate = url.searchParams.get("ate");
+
+  if (tipoPeriodo === "tudo" || de === "all") {
+    de = "all";
+    ate = "all";
+  } else if (tipoPeriodo === "mes_anterior") {
+    const primeiroDiaMesAnt = new Date(agora.getFullYear(), agora.getMonth() - 1, 1).toISOString().split("T")[0] as string;
+    const ultimoDiaMesAnt = new Date(agora.getFullYear(), agora.getMonth(), 0).toISOString().split("T")[0] as string;
+    de = primeiroDiaMesAnt;
+    ate = ultimoDiaMesAnt;
+  } else if (tipoPeriodo === "ano_atual") {
+    de = `${agora.getFullYear()}-01-01`;
+    ate = `${agora.getFullYear()}-12-31`;
+  } else {
+    de = de || primeiroDiaMes;
+    ate = ate || ultimoDiaMes;
+  }
 
   const supabase = await createClient();
 
   // 1. Obter todos os contratos da organização
   const { data: contracts, error: ctErr } = await supabase
     .from("financial_contracts" as any)
-    .select("id, contact_id, service_name, amount_cents, modality, recurrence_period, status, start_date, end_date")
+    .select("id, contact_id, service_name, total_cents, amount_cents, modality, recurrence_period, status, contract_date, start_date, end_date")
     .eq("organization_id", authz.org.orgId);
 
   if (ctErr) {

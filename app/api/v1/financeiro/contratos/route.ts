@@ -94,6 +94,10 @@ export async function POST(req: NextRequest): Promise<Response> {
     responsible_user_id,
     notes,
     gerar_cobrancas_automaticas,
+    pagamento_ja_realizado,
+    data_pagamento_realizada,
+    forma_pagamento,
+    account_id,
   } = parsed.data;
 
   const supabase = await createClient();
@@ -189,27 +193,66 @@ export async function POST(req: NextRequest): Promise<Response> {
     });
 
     if (parcelas.length > 0) {
-      const invoicesInsert = parcelas.map((p) => ({
-        organization_id: authz.org.orgId,
-        contract_id: (contract as any).id,
-        contact_id,
-        direction: "in",
-        type: "income",
-        title: p.title,
-        amount_cents: p.amount_cents,
-        contracted_cents: p.amount_cents,
-        billed_cents: p.billed_cents,
-        paid_cents: 0,
-        due_date: p.due_date,
-        installment_number: p.installment_number,
-        total_installments: p.installment_total,
-        installment_total: p.installment_total,
-        status: "pending",
-      }));
+      const isPaidNow = Boolean(pagamento_ja_realizado);
+      const paidDateStr = data_pagamento_realizada || contract_date || start_date;
+      const effectivePaidAt = paidDateStr
+        ? new Date(`${paidDateStr}T12:00:00Z`).toISOString()
+        : new Date().toISOString();
 
-      const { error: invoiceErr } = await supabase.from("financial_invoices" as any).insert(invoicesInsert);
+      const invoicesInsert = parcelas.map((p, idx) => {
+        // Se foi explicitamente marcado como já recebido: marca a parcela como paga
+        const parcelaPaga = isPaidNow && (modality === "one_off" || idx === 0);
+        return {
+          organization_id: authz.org.orgId,
+          contract_id: (contract as any).id,
+          contact_id,
+          account_id: account_id || null,
+          direction: "in",
+          type: "income",
+          title: p.title,
+          amount_cents: p.amount_cents,
+          contracted_cents: p.amount_cents,
+          billed_cents: p.billed_cents,
+          paid_cents: parcelaPaga ? p.amount_cents : 0,
+          paid_at: parcelaPaga ? effectivePaidAt : null,
+          payment_method: parcelaPaga ? (forma_pagamento || "pix") : null,
+          due_date: p.due_date,
+          installment_number: p.installment_number,
+          total_installments: p.installment_total,
+          installment_total: p.installment_total,
+          status: parcelaPaga ? "paid" : "pending",
+        };
+      });
+
+      const { data: createdInvoices, error: invoiceErr } = await supabase
+        .from("financial_invoices" as any)
+        .insert(invoicesInsert)
+        .select();
+
       if (!invoiceErr) {
         cobrancasGeradas = invoicesInsert.length;
+
+        // Se pago e houver conta, registra também lançamento em financial_entries
+        if (isPaidNow && account_id && createdInvoices) {
+          for (const inv of createdInvoices as any[]) {
+            if (inv.status === "paid") {
+              await supabase.from("financial_entries").insert({
+                organization_id: authz.org.orgId,
+                account_id,
+                direction: "in",
+                amount_cents: inv.paid_cents,
+                description: `Recebimento Contrato: ${inv.title}`,
+                entry_date: paidDateStr,
+                status: "paid",
+                paid_at: effectivePaidAt,
+                origin: "manual",
+                created_by_user_id: authz.user.id,
+                contract_id: (contract as any).id,
+                contact_id,
+              } as any);
+            }
+          }
+        }
       }
     }
   }

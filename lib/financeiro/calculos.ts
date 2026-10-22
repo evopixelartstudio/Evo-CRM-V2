@@ -140,6 +140,10 @@ export function calcularMetricasDashboard(params: {
   const mrr_cents = calcularMRR(contratos);
   const arr_cents = calcularARR(mrr_cents);
 
+  const periodoInicio = params.periodoInicio;
+  const periodoFim = params.periodoFim;
+  const filtrarPorPeriodo = Boolean(periodoInicio && periodoInicio !== "all" && periodoFim);
+
   let faturamento_periodo_cents = 0;
   let total_recebido_cents = 0;
   let total_a_receber_cents = 0;
@@ -161,20 +165,35 @@ export function calcularMetricasDashboard(params: {
 
   const proximosVencimentos: CobrancaFinanceira[] = [];
 
+  // Mapear contratos que possuem cobranças vinculadas
+  const contratosComCobrancasSet = new Set<string>();
+
   for (const c of cobrancas) {
+    if (c.contract_id) {
+      contratosComCobrancasSet.add(c.contract_id);
+    }
+
     const statusEfetivo = calcularStatusEfetivoCobranca(c, dataHoje);
+    const dataVencimento = c.due_date ? String(c.due_date).slice(0, 10) : "";
+    const dataPagamento = c.paid_at ? String(c.paid_at).slice(0, 10) : dataVencimento;
 
     if (c.direction === "in") {
-      faturamento_periodo_cents += c.amount_cents;
-      total_recebido_cents += c.paid_cents;
+      // 1. Faturamento do período: receitas reconhecidas por competência (due_date)
+      const entraNoFaturamento = !filtrarPorPeriodo || (dataVencimento >= periodoInicio! && dataVencimento <= periodoFim!);
+      if (entraNoFaturamento && statusEfetivo !== "cancelled" && statusEfetivo !== "reversed") {
+        faturamento_periodo_cents += c.amount_cents;
+      }
 
+      // 2. Total recebido: pagamentos efetivamente confirmados no período (usando a data real de recebimento)
+      const entraNoRecebido = !filtrarPorPeriodo || (dataPagamento >= periodoInicio! && dataPagamento <= periodoFim!);
+      if (entraNoRecebido && c.paid_cents > 0) {
+        total_recebido_cents += c.paid_cents;
+      }
+
+      // 3. A receber: saldo pendente de cobranças abertas
       const pendente = Math.max(0, c.amount_cents - c.paid_cents);
       if (statusEfetivo !== "paid" && statusEfetivo !== "cancelled" && statusEfetivo !== "reversed") {
         total_a_receber_cents += pendente;
-      }
-
-      if (c.contact_id && (statusEfetivo === "paid" || c.paid_cents > 0)) {
-        clientesAtivosSet.add(c.contact_id);
       }
 
       // Inadimplência
@@ -208,24 +227,43 @@ export function calcularMetricasDashboard(params: {
         proximosVencimentos.push(c);
       }
     } else if (c.direction === "out") {
-      // Despesa
-      if (statusEfetivo === "paid") {
+      // Despesas: efetivamente pagas no período selecionado
+      const entraNaDespesa = !filtrarPorPeriodo || (dataPagamento >= periodoInicio! && dataPagamento <= periodoFim!);
+      if (entraNaDespesa && (statusEfetivo === "paid" || c.paid_cents > 0)) {
         despesas_cents += c.paid_cents > 0 ? c.paid_cents : c.amount_cents;
       }
     }
   }
 
-  // Contratos recorrentes ativos
+  // Contratos: apuração de clientes ativos, contratos ativos e faturamento sem cobranças
+  let contratos_ativos_total = 0;
   let contratos_recorrentes_ativos = 0;
   let cancelamentos_churn_qtd = 0;
   let total_contratos_recorrentes = 0;
 
   for (const c of contratos) {
+    // Todo cliente com contrato ativo (recorrente, avulso em andamento ou parcelado) É CLIENTE ATIVO
+    if (c.status === "active") {
+      contratos_ativos_total += 1;
+      if (c.contact_id) {
+        clientesAtivosSet.add(c.contact_id);
+      }
+
+      // Se o contrato não tiver cobranças geradas em financial_invoices, reconhece sua receita de competência
+      if (c.id && !contratosComCobrancasSet.has(c.id)) {
+        const dataContrato = (c.contract_date || c.start_date || "").slice(0, 10);
+        const entraNoFaturamentoContrato =
+          !filtrarPorPeriodo || (dataContrato >= periodoInicio! && dataContrato <= periodoFim!);
+        if (entraNoFaturamentoContrato) {
+          faturamento_periodo_cents += Number(c.amount_cents || c.total_cents || 0);
+        }
+      }
+    }
+
     if (c.modality === "recurring") {
       total_contratos_recorrentes += 1;
       if (c.status === "active") {
         contratos_recorrentes_ativos += 1;
-        if (c.contact_id) clientesAtivosSet.add(c.contact_id);
       } else if (c.status === "cancelled") {
         cancelamentos_churn_qtd += 1;
       }
@@ -306,6 +344,7 @@ export function calcularMetricasDashboard(params: {
     resultado_cents,
     clientes_ativos: clientesAtivosSet.size,
     clientes_inadimplentes: clientesInadimplentesMap.size,
+    contratos_ativos: contratos_ativos_total,
     contratos_recorrentes_ativos,
     crescimento_receita_pct,
     cancelamentos_churn_qtd,

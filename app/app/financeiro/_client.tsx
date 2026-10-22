@@ -73,6 +73,11 @@ export function FinanceiroClient({
   const [filtroStatusContrato, setFiltroStatusContrato] = useState("");
   const [filtroStatusCobranca, setFiltroStatusCobranca] = useState("");
   const [filtroTipoCobranca, setFiltroTipoCobranca] = useState<"income" | "expense">("income");
+  const [periodoDashboard, setPeriodoDashboard] = useState<string>("mes_atual");
+  const [dataDeDashboard, setDataDeDashboard] = useState<string>("");
+  const [dataAteDashboard, setDataAteDashboard] = useState<string>("");
+  const [filtroCategoriaCliente, setFiltroCategoriaCliente] = useState<string>("");
+  const [contatosParaSelecao, setContatosParaSelecao] = useState<any[]>([]);
 
   // Modais
   const [modalNovoContratoAberto, setModalNovoContratoAberto] = useState(false);
@@ -102,6 +107,10 @@ export function FinanceiroClient({
     start_date: new Date().toISOString().split("T")[0],
     end_date: "",
     gerar_cobrancas_automaticas: true,
+    pagamento_ja_realizado: false,
+    data_pagamento_realizada: new Date().toISOString().split("T")[0],
+    forma_pagamento: "pix",
+    account_id: contas[0]?.id || "",
   });
 
   const [formCobranca, setFormCobranca] = useState({
@@ -158,19 +167,66 @@ export function FinanceiroClient({
   };
 
   // Carregar dados
+  const carregarDashboard = async (
+    periodo = periodoDashboard,
+    de = dataDeDashboard,
+    ate = dataAteDashboard,
+  ) => {
+    try {
+      const params = new URLSearchParams();
+      if (periodo) params.set("periodo", periodo);
+      if (periodo === "custom") {
+        if (de) params.set("de", de);
+        if (ate) params.set("ate", ate);
+      }
+      const res = await fetch(`/api/v1/financeiro/dashboard?${params.toString()}`).then((r) =>
+        r.json(),
+      );
+      if (res.data) setDashboard(res.data);
+    } catch (err: any) {
+      toast.error("Erro ao atualizar métricas do dashboard: " + err.message);
+    }
+  };
+
+  const carregarClientes = async (categoria = filtroCategoriaCliente) => {
+    try {
+      const params = new URLSearchParams({ apenas_clientes: "true" });
+      if (categoria) params.set("categoria", categoria);
+      const res = await fetch(`/api/v1/financeiro/clientes?${params.toString()}`).then((r) =>
+        r.json(),
+      );
+      if (res.data) setClientes(res.data);
+    } catch (err: any) {
+      toast.error("Erro ao filtrar clientes: " + err.message);
+    }
+  };
+
   const carregarTudo = async () => {
     setCarregando(true);
     try {
-      const [resDash, resClientes, resContratos, resCobrancas, resRelatorios] = await Promise.all([
-        fetch("/api/v1/financeiro/dashboard").then((r) => r.json()),
-        fetch("/api/v1/financeiro/clientes").then((r) => r.json()),
-        fetch("/api/v1/financeiro/contratos").then((r) => r.json()),
-        fetch("/api/v1/financeiro/cobrancas").then((r) => r.json()),
-        fetch("/api/v1/financeiro/relatorios").then((r) => r.json()),
-      ]);
+      const paramsDash = new URLSearchParams();
+      if (periodoDashboard) paramsDash.set("periodo", periodoDashboard);
+      if (periodoDashboard === "custom") {
+        if (dataDeDashboard) paramsDash.set("de", dataDeDashboard);
+        if (dataAteDashboard) paramsDash.set("ate", dataAteDashboard);
+      }
+
+      const paramsCli = new URLSearchParams({ apenas_clientes: "true" });
+      if (filtroCategoriaCliente) paramsCli.set("categoria", filtroCategoriaCliente);
+
+      const [resDash, resClientes, resContatos, resContratos, resCobrancas, resRelatorios] =
+        await Promise.all([
+          fetch(`/api/v1/financeiro/dashboard?${paramsDash.toString()}`).then((r) => r.json()),
+          fetch(`/api/v1/financeiro/clientes?${paramsCli.toString()}`).then((r) => r.json()),
+          fetch("/api/v1/financeiro/clientes?apenas_clientes=false").then((r) => r.json()),
+          fetch("/api/v1/financeiro/contratos").then((r) => r.json()),
+          fetch("/api/v1/financeiro/cobrancas").then((r) => r.json()),
+          fetch("/api/v1/financeiro/relatorios").then((r) => r.json()),
+        ]);
 
       if (resDash.data) setDashboard(resDash.data);
       if (resClientes.data) setClientes(resClientes.data);
+      if (resContatos.data) setContatosParaSelecao(resContatos.data);
       if (resContratos.data) setContratos(resContratos.data);
       if (resCobrancas.data) setCobrancas(resCobrancas.data);
       if (resRelatorios.data) setRelatorios(resRelatorios.data);
@@ -264,6 +320,10 @@ export function FinanceiroClient({
         start_date: formContrato.start_date,
         end_date: formContrato.end_date || undefined,
         gerar_cobrancas_automaticas: formContrato.gerar_cobrancas_automaticas,
+        pagamento_ja_realizado: formContrato.pagamento_ja_realizado,
+        data_pagamento_realizada: formContrato.pagamento_ja_realizado ? formContrato.data_pagamento_realizada : undefined,
+        forma_pagamento: formContrato.pagamento_ja_realizado ? formContrato.forma_pagamento : undefined,
+        account_id: formContrato.pagamento_ja_realizado && formContrato.account_id ? formContrato.account_id : undefined,
       };
 
       const res = await fetch("/api/v1/financeiro/contratos", {
@@ -292,6 +352,10 @@ export function FinanceiroClient({
         start_date: new Date().toISOString().split("T")[0],
         end_date: "",
         gerar_cobrancas_automaticas: true,
+        pagamento_ja_realizado: false,
+        data_pagamento_realizada: new Date().toISOString().split("T")[0],
+        forma_pagamento: "pix",
+        account_id: contas[0]?.id || "",
       });
       carregarTudo();
     } catch (err: any) {
@@ -460,7 +524,13 @@ export function FinanceiroClient({
         toast.error("Erro: " + res.error.message);
         return;
       }
-      toast.success(`Contrato atualizado para ${novoStatus}!`);
+      toast.success(
+        novoStatus === "completed"
+          ? "Serviço marcado como concluído com sucesso!"
+          : novoStatus === "active"
+            ? "Contrato ativado com sucesso!"
+            : `Contrato atualizado para ${novoStatus}!`,
+      );
       carregarTudo();
     } catch (err: any) {
       toast.error("Erro ao atualizar contrato: " + err.message);
@@ -532,6 +602,93 @@ export function FinanceiroClient({
         <TabsContent value="dashboard" className="space-y-6 pt-4">
           {dashboard ? (
             <>
+              {/* Barra de Filtro de Período do Dashboard */}
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between p-3.5 rounded-lg border bg-card/60 backdrop-blur-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Calendar className="h-4 w-4 text-primary" />
+                  <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mr-1">
+                    Período:
+                  </span>
+                  <Button
+                    variant={periodoDashboard === "mes_atual" ? "default" : "outline"}
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={() => {
+                      setPeriodoDashboard("mes_atual");
+                      carregarDashboard("mes_atual");
+                    }}
+                  >
+                    Mês Atual
+                  </Button>
+                  <Button
+                    variant={periodoDashboard === "mes_anterior" ? "default" : "outline"}
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={() => {
+                      setPeriodoDashboard("mes_anterior");
+                      carregarDashboard("mes_anterior");
+                    }}
+                  >
+                    Mês Anterior
+                  </Button>
+                  <Button
+                    variant={periodoDashboard === "ano_atual" ? "default" : "outline"}
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={() => {
+                      setPeriodoDashboard("ano_atual");
+                      carregarDashboard("ano_atual");
+                    }}
+                  >
+                    Ano Atual
+                  </Button>
+                  <Button
+                    variant={periodoDashboard === "tudo" ? "default" : "outline"}
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={() => {
+                      setPeriodoDashboard("tudo");
+                      carregarDashboard("tudo");
+                    }}
+                  >
+                    Todo o Histórico (Acumulado)
+                  </Button>
+                  <Button
+                    variant={periodoDashboard === "custom" ? "default" : "outline"}
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={() => setPeriodoDashboard("custom")}
+                  >
+                    Personalizado
+                  </Button>
+                </div>
+
+                {periodoDashboard === "custom" && (
+                  <div className="flex items-center gap-2 pt-2 sm:pt-0">
+                    <Input
+                      type="date"
+                      value={dataDeDashboard}
+                      onChange={(e) => setDataDeDashboard(e.target.value)}
+                      className="h-8 text-xs w-36"
+                    />
+                    <span className="text-xs text-muted-foreground">até</span>
+                    <Input
+                      type="date"
+                      value={dataAteDashboard}
+                      onChange={(e) => setDataAteDashboard(e.target.value)}
+                      className="h-8 text-xs w-36"
+                    />
+                    <Button
+                      size="sm"
+                      className="h-8 text-xs"
+                      onClick={() => carregarDashboard("custom", dataDeDashboard, dataAteDashboard)}
+                    >
+                      Filtrar
+                    </Button>
+                  </div>
+                )}
+              </div>
+
               {/* Metric Cards Grid */}
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <Card>
@@ -757,19 +914,80 @@ export function FinanceiroClient({
         {/* ABA 2: CLIENTES & HISTÓRICO FINANCEIRO */}
         {/* ========================================================================= */}
         <TabsContent value="clientes" className="space-y-4 pt-4">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="relative flex-1 max-w-md">
-              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Buscar cliente por nome, telefone ou e-mail..."
-                value={buscaClientes}
-                onChange={(e) => setBuscaClientes(e.target.value)}
-                className="pl-8"
-              />
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="relative flex-1 max-w-md">
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Buscar cliente por nome, telefone ou e-mail..."
+                  value={buscaClientes}
+                  onChange={(e) => setBuscaClientes(e.target.value)}
+                  className="pl-8"
+                />
+              </div>
+
+              <div className="text-sm text-muted-foreground">
+                Total: <span className="font-semibold text-foreground">{clientes.length}</span> clientes com contrato/cobrança
+              </div>
             </div>
 
-            <div className="text-sm text-muted-foreground">
-              Total: {clientes.length} clientes cadastrados
+            {/* Filtros de Categoria de Clientes */}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant={filtroCategoriaCliente === "" ? "default" : "outline"}
+                size="sm"
+                className="h-8 text-xs"
+                onClick={() => {
+                  setFiltroCategoriaCliente("");
+                  carregarClientes("");
+                }}
+              >
+                Todos
+              </Button>
+              <Button
+                variant={filtroCategoriaCliente === "ativos" ? "default" : "outline"}
+                size="sm"
+                className="h-8 text-xs"
+                onClick={() => {
+                  setFiltroCategoriaCliente("ativos");
+                  carregarClientes("ativos");
+                }}
+              >
+                Ativos
+              </Button>
+              <Button
+                variant={filtroCategoriaCliente === "historicos" ? "default" : "outline"}
+                size="sm"
+                className="h-8 text-xs"
+                onClick={() => {
+                  setFiltroCategoriaCliente("historicos");
+                  carregarClientes("historicos");
+                }}
+              >
+                Históricos (Concluídos)
+              </Button>
+              <Button
+                variant={filtroCategoriaCliente === "inadimplentes" ? "default" : "outline"}
+                size="sm"
+                className="h-8 text-xs"
+                onClick={() => {
+                  setFiltroCategoriaCliente("inadimplentes");
+                  carregarClientes("inadimplentes");
+                }}
+              >
+                Inadimplentes
+              </Button>
+              <Button
+                variant={filtroCategoriaCliente === "cancelados" ? "default" : "outline"}
+                size="sm"
+                className="h-8 text-xs"
+                onClick={() => {
+                  setFiltroCategoriaCliente("cancelados");
+                  carregarClientes("cancelados");
+                }}
+              >
+                Cancelados
+              </Button>
             </div>
           </div>
 
@@ -842,12 +1060,14 @@ export function FinanceiroClient({
                             </div>
                           </td>
                           <td className="p-3">
-                            {statusFin === "inadimplente" ? (
+                            {statusFin === "inadimplente" || (m.total_aberto_cents > 0 && m.inadimplente) ? (
                               <Badge variant="destructive">Inadimplente</Badge>
-                            ) : statusFin === "em_dia" ? (
-                              <Badge className="bg-emerald-600 hover:bg-emerald-700">Em dia</Badge>
+                            ) : (m.contratos_ativos || 0) > 0 ? (
+                              <Badge className="bg-emerald-600 hover:bg-emerald-700">Ativo</Badge>
+                            ) : (m.contratos_total || 0) > 0 ? (
+                              <Badge variant="secondary">Histórico (Concluído)</Badge>
                             ) : (
-                              <Badge variant="secondary">Regular</Badge>
+                              <Badge variant="outline">Regular</Badge>
                             )}
                           </td>
                           <td className="p-3">
@@ -967,7 +1187,22 @@ export function FinanceiroClient({
                         </td>
                         <td className="p-3">Dia {ct.due_day || 10}</td>
                         <td className="p-3 text-xs text-muted-foreground">
-                          {formatarData(ct.start_date)} {ct.end_date ? `até ${formatarData(ct.end_date)}` : "• Contínuo"}
+                          {ct.modality === "one_off" ? (
+                            <span>
+                              Avulso (Contratação: {formatarData(ct.contract_date || ct.start_date)})
+                              {ct.end_date ? ` · Previsão Entrega: ${formatarData(ct.end_date)}` : ""}
+                            </span>
+                          ) : ct.modality === "installments" ? (
+                            <span>
+                              Parcelado ({ct.installments_count || 1}x) · Início: {formatarData(ct.start_date)}
+                              {ct.end_date ? ` até ${formatarData(ct.end_date)}` : ""}
+                            </span>
+                          ) : (
+                            <span>
+                              {formatarData(ct.start_date)}{" "}
+                              {ct.end_date ? `até ${formatarData(ct.end_date)}` : "• Recorrente / Contínuo"}
+                            </span>
+                          )}
                         </td>
                         <td className="p-3">
                           {ct.status === "active" && <Badge className="bg-emerald-600">Ativo</Badge>}
@@ -976,36 +1211,75 @@ export function FinanceiroClient({
                           {ct.status === "cancelled" && <Badge variant="destructive">Cancelado</Badge>}
                         </td>
                         <td className="p-3 text-right space-x-1">
-                          {ct.status === "active" && (
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => alterarStatusContrato(ct.id, "paused")}
-                              className="h-7 text-xs"
-                            >
-                              Pausar
-                            </Button>
-                          )}
-                          {ct.status === "paused" && (
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => alterarStatusContrato(ct.id, "active")}
-                              className="h-7 text-xs text-emerald-600"
-                            >
-                              Ativar
-                            </Button>
-                          )}
-                          {ct.status !== "cancelled" && (
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => alterarStatusContrato(ct.id, "cancelled")}
-                              className="h-7 text-xs text-rose-600"
-                            >
-                              Cancelar
-                            </Button>
-                          )}
+                          {(() => {
+                            const faturaPendente = cobrancas.find(
+                              (cob: any) => cob.contract_id === ct.id && cob.status === "pending",
+                            );
+                            return (
+                              <>
+                                {faturaPendente && (
+                                  <Button
+                                    size="sm"
+                                    onClick={() => abrirModalPagamento(faturaPendente)}
+                                    className="h-7 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                                  >
+                                    Receber
+                                  </Button>
+                                )}
+                                {ct.status === "active" &&
+                                  (ct.modality === "one_off" || ct.modality === "installments") && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => alterarStatusContrato(ct.id, "completed")}
+                                      className="h-7 text-xs text-emerald-700 hover:text-emerald-800 border-emerald-300"
+                                    >
+                                      Concluir Serviço
+                                    </Button>
+                                  )}
+                                {ct.status === "completed" && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => alterarStatusContrato(ct.id, "active")}
+                                    className="h-7 text-xs text-blue-600"
+                                  >
+                                    Reabrir
+                                  </Button>
+                                )}
+                                {ct.status === "active" && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => alterarStatusContrato(ct.id, "paused")}
+                                    className="h-7 text-xs"
+                                  >
+                                    Pausar
+                                  </Button>
+                                )}
+                                {ct.status === "paused" && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => alterarStatusContrato(ct.id, "active")}
+                                    className="h-7 text-xs text-emerald-600"
+                                  >
+                                    Ativar
+                                  </Button>
+                                )}
+                                {ct.status !== "cancelled" && ct.status !== "completed" && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => alterarStatusContrato(ct.id, "cancelled")}
+                                    className="h-7 text-xs text-rose-600"
+                                  >
+                                    Cancelar
+                                  </Button>
+                                )}
+                              </>
+                            );
+                          })()}
                         </td>
                       </tr>
                     ))}
@@ -1359,7 +1633,7 @@ export function FinanceiroClient({
 
           <form onSubmit={criarContrato} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="cliente">Cliente (Cadastro Único CRM)</Label>
+              <Label htmlFor="cliente">Cliente (Cadastro do CRM)</Label>
               <select
                 id="cliente"
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
@@ -1367,8 +1641,8 @@ export function FinanceiroClient({
                 onChange={(e) => setFormContrato({ ...formContrato, contact_id: e.target.value })}
                 required
               >
-                <option value="">Selecione um cliente existente...</option>
-                {clientes.map((c) => (
+                <option value="">Selecione um contato/cliente cadastrado...</option>
+                {(contatosParaSelecao.length > 0 ? contatosParaSelecao : clientes).map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.display_name} {c.phone_number ? `(${c.phone_number})` : ""}
                   </option>
@@ -1495,6 +1769,86 @@ export function FinanceiroClient({
               </Label>
             </div>
 
+            <div className="p-3.5 rounded-lg border bg-muted/40 space-y-3">
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="pagamento_ja_realizado"
+                  checked={formContrato.pagamento_ja_realizado}
+                  onChange={(e) =>
+                    setFormContrato({ ...formContrato, pagamento_ja_realizado: e.target.checked })
+                  }
+                  className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                />
+                <Label htmlFor="pagamento_ja_realizado" className="text-xs font-semibold cursor-pointer">
+                  Registrar pagamento como já realizado (quitação imediata ou retroativa)
+                </Label>
+              </div>
+
+              {formContrato.pagamento_ja_realizado && (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+                  <div className="space-y-1">
+                    <Label htmlFor="data_pagamento_realizada" className="text-xs">
+                      Data Real do Pagamento
+                    </Label>
+                    <Input
+                      id="data_pagamento_realizada"
+                      type="date"
+                      value={formContrato.data_pagamento_realizada}
+                      onChange={(e) =>
+                        setFormContrato({ ...formContrato, data_pagamento_realizada: e.target.value })
+                      }
+                      required={formContrato.pagamento_ja_realizado}
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label htmlFor="forma_pagamento_contrato" className="text-xs">
+                      Forma de Pagamento
+                    </Label>
+                    <select
+                      id="forma_pagamento_contrato"
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
+                      value={formContrato.forma_pagamento}
+                      onChange={(e) =>
+                        setFormContrato({ ...formContrato, forma_pagamento: e.target.value })
+                      }
+                    >
+                      <option value="pix">PIX</option>
+                      <option value="credit_card">Cartão de Crédito</option>
+                      <option value="debit_card">Cartão de Débito</option>
+                      <option value="bank_slip">Boleto Bancário</option>
+                      <option value="bank_transfer">Transferência</option>
+                      <option value="cash">Dinheiro em Espécie</option>
+                      <option value="other">Outro</option>
+                    </select>
+                  </div>
+
+                  {contas && contas.length > 0 && (
+                    <div className="space-y-1">
+                      <Label htmlFor="conta_pagamento_contrato" className="text-xs">
+                        Conta de Destino
+                      </Label>
+                      <select
+                        id="conta_pagamento_contrato"
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
+                        value={formContrato.account_id}
+                        onChange={(e) =>
+                          setFormContrato({ ...formContrato, account_id: e.target.value })
+                        }
+                      >
+                        {contas.map((acc) => (
+                          <option key={acc.id} value={acc.id}>
+                            {acc.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
             <DialogFooter className="pt-4">
               <Button type="button" variant="outline" onClick={() => setModalNovoContratoAberto(false)}>
                 Cancelar
@@ -1556,9 +1910,9 @@ export function FinanceiroClient({
                   onChange={(e) => setFormCobranca({ ...formCobranca, contact_id: e.target.value })}
                 >
                   <option value="">Nenhum cliente vinculado</option>
-                  {clientes.map((c) => (
+                  {(contatosParaSelecao.length > 0 ? contatosParaSelecao : clientes).map((c) => (
                     <option key={c.id} value={c.id}>
-                      {c.display_name}
+                      {c.display_name} {c.phone_number ? `(${c.phone_number})` : ""}
                     </option>
                   ))}
                 </select>

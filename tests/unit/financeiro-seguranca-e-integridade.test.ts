@@ -73,13 +73,13 @@ describe("Criação de Contratos e Cobranças", () => {
     });
 
     expect(parcelas).toHaveLength(1);
-    expect(parcelas[0].contracted_cents).toBe(50000);
-    expect(parcelas[0].amount_cents).toBe(50000);
-    expect(parcelas[0].billed_cents).toBe(50000);
-    expect(parcelas[0].direction).toBe("in");
-    expect(parcelas[0].installment_number).toBe(1);
-    expect(parcelas[0].total_installments).toBe(1);
-    expect(parcelas[0].status).toBe("pending");
+    expect(parcelas[0]!.contracted_cents).toBe(50000);
+    expect(parcelas[0]!.amount_cents).toBe(50000);
+    expect(parcelas[0]!.billed_cents).toBe(50000);
+    expect(parcelas[0]!.direction).toBe("in");
+    expect(parcelas[0]!.installment_number).toBe(1);
+    expect(parcelas[0]!.total_installments).toBe(1);
+    expect(parcelas[0]!.status).toBe("pending");
   });
 
   it("gera parcelas de contrato parcelado (installments) com divisão de valores", () => {
@@ -95,13 +95,13 @@ describe("Criação de Contratos e Cobranças", () => {
     });
 
     expect(parcelas).toHaveLength(3);
-    expect(parcelas[0].installment_number).toBe(1);
-    expect(parcelas[0].total_installments).toBe(3);
-    expect(parcelas[1].installment_number).toBe(2);
-    expect(parcelas[2].installment_number).toBe(3);
-    expect(parcelas[0].billed_cents).toBe(10000);
-    expect(parcelas[1].billed_cents).toBe(10000);
-    expect(parcelas[2].billed_cents).toBe(10000);
+    expect(parcelas[0]!.installment_number).toBe(1);
+    expect(parcelas[0]!.total_installments).toBe(3);
+    expect(parcelas[1]!.installment_number).toBe(2);
+    expect(parcelas[2]!.installment_number).toBe(3);
+    expect(parcelas[0]!.billed_cents).toBe(10000);
+    expect(parcelas[1]!.billed_cents).toBe(10000);
+    expect(parcelas[2]!.billed_cents).toBe(10000);
   });
 
   it("valida criação de cobrança avulsa com normalização de direção e tipo", () => {

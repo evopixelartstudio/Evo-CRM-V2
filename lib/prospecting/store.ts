@@ -743,3 +743,242 @@ export async function adjustPace(pool: pg.Pool, org: string, id: string, pace: C
     };
   });
 }
+
+/**
+ * EXCLUIR CAMPANHA:
+ * Remove a campanha de prospecção e, por efeito cascata no banco, os candidatos
+ * em `prospecting_candidates`. Contatos e negócios que já entraram no CRM
+ * são preservados (on delete set null).
+ */
+export async function deleteCampaign(pool: pg.Pool, org: string, id: string) {
+  return withProspectingLock(pool, org, async (db) => {
+    const existing = (
+      await db.query<{ id: string; name: string; status: string }>(
+        "select id, name, status from prospecting_campaigns where organization_id=$1 and id=$2",
+        [org, id],
+      )
+    ).rows[0];
+    if (!existing) throw new ProspectingError("Campanha não encontrada.", 404);
+
+    await db.query(
+      "delete from prospecting_campaigns where organization_id=$1 and id=$2",
+      [org, id],
+    );
+    return { deleted: true, id, name: existing.name };
+  });
+}
+
+/**
+ * CHAMAR INDIVIDUALMENTE NO WHATSAPP:
+ * Garante que a empresa exista como contato no CRM, cria ou move a oportunidade
+ * diretamente para a etapa de "Primeiro Contato" no funil configurado (ou padrão da organização),
+ * abre ou vincula a conversa e retorna o link formatado para o WhatsApp.
+ */
+export async function contactSingleCandidate(
+  pool: pg.Pool,
+  admin: SupabaseClient,
+  org: string,
+  campaignId: string,
+  candidateId: string,
+) {
+  return withProspectingLock(pool, org, async (db) => {
+    const campaign = (
+      await db.query<Campaign>(
+        "select * from prospecting_campaigns where organization_id=$1 and id=$2",
+        [org, campaignId],
+      )
+    ).rows[0];
+    if (!campaign) throw new ProspectingError("Campanha não encontrada.", 404);
+
+    const candidate = (
+      await db.query<Candidate>(
+        "select * from prospecting_candidates where organization_id=$1 and campaign_id=$2 and id=$3",
+        [org, campaignId, candidateId],
+      )
+    ).rows[0];
+    if (!candidate) throw new ProspectingError("Candidato não encontrado na campanha.", 404);
+
+    const rawPhone = candidate.data?.phone || candidate.phone;
+    if (!rawPhone) {
+      throw new ProspectingError(
+        "Esta empresa não possui telefone brasileiro válido para contato via WhatsApp.",
+        422,
+      );
+    }
+
+    let digits = rawPhone.replace(/\D/g, "");
+    if (!digits.startsWith("55") && [10, 11].includes(digits.length)) {
+      digits = `55${digits}`;
+    }
+    const cleanPhone = `+${digits}`;
+    const waDigits = digits;
+
+    // 1. Determina Pipeline e Etapa de "Primeiro Contato"
+    let targetPipelineId = campaign.config?.pipeline_id ?? null;
+    let targetStageId = campaign.config?.stage_id ?? null;
+
+    if (!targetPipelineId || !targetStageId) {
+      const stageQuery = await db.query<{ id: string; pipeline_id: string; name: string }>(
+        `select s.id, s.pipeline_id, s.name
+         from crm_stages s
+         join crm_pipelines p on p.id = s.pipeline_id and p.organization_id = s.organization_id
+         where s.organization_id = $1
+           and not s.is_archived
+           and not s.is_won
+           and not s.is_lost
+         order by
+           case
+             when s.agent_stage_hint = 'contacted' then 1
+             when lower(s.name) like '%primeiro contato%' or s.slug = 'primeiro_contato' then 2
+             else 3
+           end asc,
+           p.is_default desc,
+           s.position asc
+         limit 1`,
+        [org],
+      );
+
+      const foundStage = stageQuery.rows[0];
+      if (!foundStage) {
+        throw new ProspectingError("Nenhuma etapa de funil ativa encontrada na organização.", 422);
+      }
+      targetPipelineId = foundStage.pipeline_id;
+      targetStageId = foundStage.id;
+    }
+
+    // 2. Canal de saída
+    let channelSessionId = campaign.config?.channel_session_id ?? null;
+    if (!channelSessionId) {
+      const channelQuery = await db.query<{ id: string }>(
+        `select id from channel_sessions
+         where organization_id = $1 and archived_at is null and status = 'WORKING'
+         order by created_at asc limit 1`,
+        [org],
+      );
+      channelSessionId = channelQuery.rows[0]?.id ?? null;
+    }
+
+    const ctx = {
+      organization_id: org,
+      actor: { type: "webhook_source" as const, id: campaign.id },
+      requestId: `single_contact:${candidate.id}`,
+    };
+
+    // 3. Resolve ou cria Contato
+    let contactId = candidate.contact_id;
+    if (!contactId) {
+      const variants = phoneLookupVariants(cleanPhone);
+      const known = await db.query<{ id: string }>(
+        "select id from contacts where organization_id=$1 and phone_number=any($2::text[]) limit 1",
+        [org, variants],
+      );
+      if (known.rows[0]) {
+        contactId = known.rows[0].id;
+      }
+    }
+
+    if (!contactId) {
+      const contact = await createContactHandler(admin, ctx, {
+        name: candidate.data.name,
+        display_name: candidate.data.name,
+        phone_number: cleanPhone,
+        source: "prospecting",
+        source_metadata: {
+          campaign_id: campaign.id,
+          candidate_id: candidate.id,
+          place_id: candidate.data.key,
+          maps_url: candidate.data.maps_url,
+        },
+        tags: ["prospeccao"],
+        consent: {
+          legitimate_interest: {
+            ref: campaign.config?.legal_basis_ref ?? "Prospecção individual via WhatsApp",
+          },
+        },
+      });
+      contactId = String(contact.contact.id);
+    }
+
+    // 4. Resolve ou cria Oportunidade no Funil (garantindo que vá para "Primeiro Contato")
+    let leadId = candidate.lead_id;
+    if (!leadId) {
+      const existing = await db.query<{ id: string }>(
+        "select id from crm_leads where organization_id=$1 and (external_id=$2 or (contact_id=$3 and not is_archived)) order by created_at desc limit 1",
+        [org, candidate.id, contactId],
+      );
+      leadId = existing.rows[0]?.id ?? null;
+    }
+
+    if (leadId) {
+      await db.query(
+        "update crm_leads set stage_id=$3, pipeline_id=$4, updated_at=now() where organization_id=$1 and id=$2",
+        [org, leadId, targetStageId, targetPipelineId],
+      );
+    } else {
+      const negocioBase = createLeadSchema.parse({
+        pipeline_id: targetPipelineId,
+        stage_id: targetStageId,
+        title: candidate.data.name,
+        owner_agent_id: campaign.config?.agent_id ?? null,
+        source: "prospecting",
+        description: `Prospecção via WhatsApp - Campanha: ${campaign.name}`.slice(0, 2000),
+      });
+      const lead = await createLeadHandler(admin, ctx, {
+        ...negocioBase,
+        contact_id: contactId,
+        external_id: candidate.id,
+      });
+      leadId = String(lead.id);
+    }
+
+    // 5. Inicia ou resolve Conversa
+    let conversationId = candidate.conversation_id;
+    if (!conversationId) {
+      const existingConv = await db.query<{ id: string }>(
+        "select id from conversations where organization_id=$1 and contact_id=$2 order by created_at desc limit 1",
+        [org, contactId],
+      );
+      conversationId = existingConv.rows[0]?.id ?? null;
+    }
+
+    if (!conversationId && channelSessionId) {
+      try {
+        const boundary = await beginServiceAtOrigin(admin, org, contactId, channelSessionId);
+        conversationId = boundary.conversation_id;
+        if (campaign.config?.agent_id) {
+          await db.query(
+            "update conversations set active_ai_agent_id=$3,metadata=coalesce(metadata,'{}'::jsonb) || jsonb_build_object('prospecting_campaign_id',$4::text) where organization_id=$1 and id=$2",
+            [org, conversationId, campaign.config.agent_id, campaign.id],
+          );
+        }
+      } catch {
+        // Se a conversa não puder ser inicializada no canal, prossegue com abertura do link
+      }
+    }
+
+    // 6. Atualiza o Candidato
+    await db.query(
+      `update prospecting_candidates
+       set contact_id=$3,
+           lead_id=$4,
+           conversation_id=coalesce($5, conversation_id),
+           status='sent',
+           error=null,
+           attempted_at=coalesce(attempted_at, now()),
+           updated_at=now()
+       where organization_id=$1 and id=$2`,
+      [org, candidate.id, contactId, leadId, conversationId],
+    );
+
+    return {
+      success: true,
+      candidate_id: candidate.id,
+      contact_id: contactId,
+      lead_id: leadId,
+      conversation_id: conversationId,
+      phone: cleanPhone,
+      whatsapp_url: `https://wa.me/${waDigits}`,
+      stage_id: targetStageId,
+    };
+  });
+}

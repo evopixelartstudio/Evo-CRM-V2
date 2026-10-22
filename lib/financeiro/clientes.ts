@@ -81,7 +81,7 @@ export function construirPerfilFinanceiroCliente(
     dataHoje = arg4 ?? new Date().toISOString().slice(0, 10);
   }
 
-  const cf = (contact.custom_fields ?? {}) as Record<string, unknown>;
+  const cf = (contact?.custom_fields ?? {}) as Record<string, unknown>;
 
   let total_paid_cents = 0;
   let total_overdue_cents = 0;
@@ -117,17 +117,21 @@ export function construirPerfilFinanceiroCliente(
     : ((cf.financial_status as "em_dia" | "inadimplente" | "isento" | "cancelado") ?? "em_dia");
 
   return {
-    id: contact.id,
-    name: contact.name || contact.display_name || "Cliente sem nome",
-    display_name: contact.display_name,
+    id: contact?.id ?? "unknown",
+    name: contact?.name || contact?.display_name || "Cliente sem nome",
+    display_name: contact?.display_name ?? null,
     trade_name: (cf.trade_name as string) ?? null,
-    phone_number: contact.phone_number,
-    email: contact.email,
+    phone_number: contact?.phone_number ?? null,
+    email: contact?.email ?? null,
     instagram: (cf.instagram as string) ?? null,
     document: (cf.document as string) ?? (cf.cpf_cnpj as string) ?? null,
     client_since:
       (cf.client_since as string) ??
-      (contact.client_recognized_at ? contact.client_recognized_at.slice(0, 10) : contact.created_at.slice(0, 10)),
+      (contact?.client_recognized_at
+        ? contact.client_recognized_at.slice(0, 10)
+        : contact?.created_at
+          ? contact.created_at.slice(0, 10)
+          : null),
     commercial_status: (cf.commercial_status as "lead" | "cliente_ativo" | "cliente_inativo" | "ex_cliente") ?? "cliente_ativo",
     financial_status: calculatedFinancialStatus,
     notes: (cf.financial_notes as string) ?? null,

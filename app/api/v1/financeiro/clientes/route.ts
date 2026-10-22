@@ -16,9 +16,45 @@ export async function GET(req: NextRequest): Promise<Response> {
   const url = new URL(req.url);
   const q = url.searchParams.get("q")?.trim();
   const statusFinanceiro = url.searchParams.get("status_financeiro");
+  const categoriaCliente = url.searchParams.get("categoria"); // ativos | historicos | inadimplentes | concluidos | cancelados
   const apenasClientes = url.searchParams.get("apenas_clientes") !== "false";
 
   const supabase = await createClient();
+
+  let contactIdsValidos: string[] = [];
+
+  // Se apenasClientes for true (padrão da aba Clientes), buscar EXCLUSIVAMENTE
+  // contatos que possuem contratação efetiva (financial_contracts ou financial_invoices de receita)
+  if (apenasClientes) {
+    const [contractsRes, invoicesRes] = await Promise.all([
+      supabase
+        .from("financial_contracts" as any)
+        .select("contact_id")
+        .eq("organization_id", authz.org.orgId)
+        .not("contact_id", "is", null),
+      supabase
+        .from("financial_invoices" as any)
+        .select("contact_id")
+        .eq("organization_id", authz.org.orgId)
+        .eq("type", "income")
+        .not("contact_id", "is", null),
+    ]);
+
+    const idSet = new Set<string>();
+    (contractsRes.data ?? []).forEach((c: any) => {
+      if (c.contact_id) idSet.add(c.contact_id);
+    });
+    (invoicesRes.data ?? []).forEach((inv: any) => {
+      if (inv.contact_id) idSet.add(inv.contact_id);
+    });
+
+    contactIdsValidos = Array.from(idSet);
+
+    // Se não há nenhum cliente efetivo, retorna vazio imediatamente
+    if (contactIdsValidos.length === 0) {
+      return ok([], { requestId });
+    }
+  }
 
   let query = supabase
     .from("contacts")
@@ -37,6 +73,10 @@ export async function GET(req: NextRequest): Promise<Response> {
     .order("created_at", { ascending: false })
     .limit(300);
 
+  if (apenasClientes) {
+    query = query.in("id", contactIdsValidos);
+  }
+
   if (q) {
     query = query.or(`display_name.ilike.%${q}%,phone_number.ilike.%${q}%,email.ilike.%${q}%`);
   }
@@ -49,7 +89,10 @@ export async function GET(req: NextRequest): Promise<Response> {
   // Buscar resumos de contratos e faturas para enriquecer a lista
   const contactIds = (contacts ?? []).map((c) => c.id);
 
-  let contractsMap: Record<string, { count: number; active: number; mrr_cents: number }> = {};
+  let contractsMap: Record<
+    string,
+    { count: number; active: number; completed: number; cancelled: number; mrr_cents: number }
+  > = {};
   let invoicesMap: Record<string, { total_paid_cents: number; total_open_cents: number; has_overdue: boolean }> = {};
 
   if (contactIds.length > 0) {
@@ -62,7 +105,7 @@ export async function GET(req: NextRequest): Promise<Response> {
     (contracts ?? []).forEach((ct: any) => {
       const cid = ct.contact_id;
       if (!contractsMap[cid]) {
-        contractsMap[cid] = { count: 0, active: 0, mrr_cents: 0 };
+        contractsMap[cid] = { count: 0, active: 0, completed: 0, cancelled: 0, mrr_cents: 0 };
       }
       contractsMap[cid].count++;
       if (ct.status === "active") {
@@ -70,6 +113,10 @@ export async function GET(req: NextRequest): Promise<Response> {
         if (ct.modality === "recurring") {
           contractsMap[cid].mrr_cents += Number(ct.amount_cents || 0);
         }
+      } else if (ct.status === "completed") {
+        contractsMap[cid].completed++;
+      } else if (ct.status === "cancelled") {
+        contractsMap[cid].cancelled++;
       }
     });
 
@@ -102,7 +149,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   const result = (contacts ?? []).map((c) => {
     const custom = extrairCamposFinanceirosDoContato(c.custom_fields);
-    const cStats = contractsMap[c.id] ?? { count: 0, active: 0, mrr_cents: 0 };
+    const cStats = contractsMap[c.id] ?? { count: 0, active: 0, completed: 0, cancelled: 0, mrr_cents: 0 };
     const iStats = invoicesMap[c.id] ?? { total_paid_cents: 0, total_open_cents: 0, has_overdue: false };
 
     // Situação financeira real calculada
@@ -113,7 +160,20 @@ export async function GET(req: NextRequest): Promise<Response> {
       situacaoFinanceira = "em_dia";
     }
 
-    const ehCliente = Boolean(c.client_recognized_at || cStats.count > 0 || custom.commercial_status === "cliente_ativo");
+    // Classificação contratual do cliente
+    let tipoCliente: "ativo" | "inadimplente" | "historico" | "concluido" | "cancelado" = "historico";
+    if (iStats.has_overdue) {
+      tipoCliente = "inadimplente";
+    } else if (cStats.active > 0) {
+      tipoCliente = "ativo";
+    } else if (cStats.completed > 0 && cStats.active === 0) {
+      tipoCliente = "concluido";
+    } else if (cStats.cancelled > 0 && cStats.active === 0) {
+      tipoCliente = "cancelado";
+    }
+
+    // É cliente se possui contratação ou cobrança efetiva registrada
+    const ehCliente = Boolean(cStats.count > 0 || iStats.total_paid_cents > 0 || iStats.total_open_cents > 0);
 
     return {
       id: c.id,
@@ -127,9 +187,12 @@ export async function GET(req: NextRequest): Promise<Response> {
         ...custom,
         financial_status: situacaoFinanceira,
       },
+      classificacao_cliente: tipoCliente,
       metricas: {
         total_contratos: cStats.count,
         contratos_ativos: cStats.active,
+        contratos_concluidos: cStats.completed,
+        contratos_cancelados: cStats.cancelled,
         mrr_cents: cStats.mrr_cents,
         total_pago_cents: iStats.total_paid_cents,
         total_aberto_cents: iStats.total_open_cents,
@@ -140,8 +203,15 @@ export async function GET(req: NextRequest): Promise<Response> {
   });
 
   const filtrado = result.filter((item) => {
-    if (apenasClientes && !q && !item.eh_cliente) return false;
+    if (apenasClientes && !item.eh_cliente) return false;
     if (statusFinanceiro && item.campos_financeiros.financial_status !== statusFinanceiro) return false;
+    if (categoriaCliente) {
+      if (categoriaCliente === "ativos" && item.classificacao_cliente !== "ativo") return false;
+      if (categoriaCliente === "inadimplentes" && item.classificacao_cliente !== "inadimplente") return false;
+      if (categoriaCliente === "concluidos" && item.classificacao_cliente !== "concluido") return false;
+      if (categoriaCliente === "cancelados" && item.classificacao_cliente !== "cancelado") return false;
+      if (categoriaCliente === "historicos" && item.classificacao_cliente === "ativo") return false;
+    }
     return true;
   });
 
