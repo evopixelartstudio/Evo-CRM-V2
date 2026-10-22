@@ -441,33 +441,15 @@ export const NAV_CATALOG = [
     // SEM `sidebar`, como a tela-mãe de Propostas: chega-se por Configurações.
   },
   {
-    // O BALCÃO. Fica em CRM, e não em Configurações, porque é uso diário de quem
-    // está com a cliente na frente — a tela irmã, em Configurações › Financeiro,
-    // é onde o negócio se descreve uma vez.
-    //
-    // `viewer` porque conferir o que foi lançado no dia não é privilégio de
-    // quem lança; o que a RLS impede é ele escrever.
-    href: "/app/comandas",
-    label: "Comandas",
-    description: "O que foi feito, por quem, e quanto o cliente paga.",
+    // O FINANCEIRO INTEGRADO. Substitui integralmente o balcão de comandas,
+    // integrando contratos de serviços, receitas, despesas e fluxo de caixa.
+    href: "/app/financeiro",
+    label: "Financeiro",
+    description: "Contratos, cobranças, receitas, despesas e fluxo de caixa.",
     icon: "Receipt",
     group: "crm",
     section: "O dia a dia da venda",
-    // ⚠️ FORA do sidebar, e isto foi MEDIDO, não escolhido por gosto. Com
-    // `sidebar: true` o menu passou a rolar em 1280×900 e o e2e
-    // `navegacao.spec.ts` ("nenhum grupo fica fora da dobra") reprovou — grupo
-    // abaixo da dobra é indistinguível de grupo que não existe. A regra escrita
-    // no comentário de densidade do `Sidebar.tsx` é esta: grupo COM hub não
-    // ganha linha nova no menu, a tela mora dentro do hub. O CRM tem hub desde
-    // Tarefas (PR #546), e raspar 4px de densidade de novo só adiaria a mesma
-    // conversa para a próxima tela.
-    //
-    // O balcão continua a um clique: CRM › Ver tudo em CRM › "O dia a dia da
-    // venda", e pelo ⌘K digitando "comanda".
     minRole: "viewer",
-    // Módulo de tabela (ADR-0002, #1907): as cinco tabelas da comanda nascem na
-    // instalação do `financeiro` em `/admin/modulos`; sem ele a porta some, como
-    // `/app/honorarios`. O caixa (Configurações › Financeiro) é núcleo e fica.
     modulo: "financeiro",
   },
   {

@@ -475,9 +475,10 @@ async function withTarefas(
   };
 }
 
-export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
+export async function GET(req: NextRequest, ctx: RouteCtx): Promise<Response> {
   const requestId = randomUUID();
   const { id: pipelineId } = await ctx.params;
+  const includeClosed = req.nextUrl?.searchParams?.get("include_closed") === "true";
 
   const supabase = await createClient();
   const {
@@ -489,6 +490,18 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
   }
   const authUser = await loadAuthUser();
   const t = (texto: string) => traduzir(texto, authUser?.idioma ?? "pt-BR");
+
+  let leadsQuery = supabase
+    .from("crm_leads")
+    .select("*")
+    .eq("pipeline_id", pipelineId)
+    .order("position_in_stage");
+
+  if (!includeClosed) {
+    leadsQuery = leadsQuery.eq("status", "open");
+  } else {
+    leadsQuery = leadsQuery.neq("status", "archived");
+  }
 
   const [
     { data: pipeline, error: pipelineErr },
@@ -502,12 +515,7 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
       .eq("pipeline_id", pipelineId)
       .eq("is_archived", false)
       .order("position"),
-    supabase
-      .from("crm_leads")
-      .select("*")
-      .eq("pipeline_id", pipelineId)
-      .neq("status", "archived")
-      .order("position_in_stage"),
+    leadsQuery,
   ]);
 
   if (pipelineErr) return fail("internal_error", pipelineErr.message, 500, { requestId });

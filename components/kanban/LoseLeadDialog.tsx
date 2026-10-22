@@ -61,6 +61,7 @@ export function LoseLeadDialog({
   const t = useT();
   const [reasonCode, setReasonCode] = useState<string>("");
   const [otherText, setOtherText] = useState("");
+  const [notes, setNotes] = useState("");
   const mutation = useLoseLead(pipelineId);
   // O diálogo vale para os DOIS modos: a escrita individual (card) ou a do
   // chamador (lote). "em voo" é a mutação individual OU o sinal externo.
@@ -125,12 +126,17 @@ export function LoseLeadDialog({
       if (onConfirm) {
         await onConfirm(finalReason);
       } else if (leadId) {
-        await mutation.mutateAsync({ leadId, lostReason: finalReason });
+        await mutation.mutateAsync({
+          leadId,
+          lostReason: finalReason,
+          closureNotes: notes.trim() || undefined,
+        });
       } else {
         return;
       }
       setReasonCode("");
       setOtherText("");
+      setNotes("");
       onOpenChange(false);
       onPerdido?.();
     } catch {
@@ -214,6 +220,18 @@ export function LoseLeadDialog({
               )}
             </div>
           )}
+
+          <div className="grid gap-1.5 pt-1">
+            <Label htmlFor="lost-reason-notes">{t("Observações (opcional)")}</Label>
+            <Textarea
+              id="lost-reason-notes"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder={t("Adicione observações internas sobre o encerramento...")}
+              maxLength={MAX_LEN}
+              rows={2}
+            />
+          </div>
         </div>
 
         <DialogFooter>

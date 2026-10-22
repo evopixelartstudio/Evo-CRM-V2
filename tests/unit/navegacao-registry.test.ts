@@ -140,7 +140,7 @@ describe("sidebarGroups", () => {
     // E continua alcançável: o hub é a porta dela.
     expect(
       hubSections("crm", true, null).flatMap((s) => s.items.map((i) => i.href)),
-    ).toContain("/app/comandas");
+    ).toContain("/app/financeiro");
     expect(NAV_GROUPS.find((g) => g.id === "crm")?.hub?.href).toBe("/app/crm");
   });
 
@@ -187,7 +187,7 @@ describe("hubSections", () => {
       // menu do dia a dia com os 20 itens de sempre; a porta é o hub e o ⌘K.
       "/app/tasks/planos",
       "/app/calls",
-      "/app/comandas",
+      "/app/financeiro",
       "/app/products",
       "/app/imports",
       "/app/settings/tenant/pipelines",

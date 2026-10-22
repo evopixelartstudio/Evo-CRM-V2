@@ -51,6 +51,11 @@ export interface EncerraDemandaInput {
    */
   motivo?: string | null;
   /**
+   * Observações adicionais do operador ao encerrar a oportunidade.
+   * Gravadas em `custom_fields.closure_notes`.
+   */
+  closureNotes?: string | null;
+  /**
    * A razão da linha na timeline, quando o desfecho padrão ("Ganho" /
    * "Perdido — <motivo>") diria algo FALSO a quem lê. Hoje só a troca de funil a
    * usa: a origem fecha como perda porque é o único desfecho que o schema oferece
@@ -80,6 +85,41 @@ function actorAuditPayload(actor: Actor): {
     actorUserId: null,
     metadataActor: { actor_type: actor.type, actor_id: actor.id },
   };
+}
+
+async function cancelaFollowupsDoLead(
+  supabase: SupabaseClient,
+  orgId: string,
+  leadId: string,
+): Promise<void> {
+  try {
+    const { data: links } = await supabase
+      .from("crm_lead_links")
+      .select("target_id")
+      .eq("organization_id", orgId)
+      .eq("lead_id", leadId)
+      .eq("target_kind", "conversation");
+
+    const convIds = (links ?? []).map((l) => l.target_id).filter(Boolean);
+
+    if (convIds.length > 0) {
+      await supabase
+        .from("followup_enrollments")
+        .update({
+          status: "cancelled",
+          outcome: "handoff",
+          cancel_reason: "lead_closed",
+          next_eval_at: null,
+          claimed_until: null,
+          completed_at: new Date().toISOString(),
+        })
+        .eq("organization_id", orgId)
+        .in("conversation_id", convIds)
+        .in("status", ["active", "waiting_reply", "paused_handoff", "paused_manual"]);
+    }
+  } catch (err) {
+    console.warn("[encerramento] cancelaFollowupsDoLead:", err);
+  }
 }
 
 /**
@@ -249,12 +289,37 @@ export async function encerraDemanda(
   if (input.desfecho === "won" && input.motivo?.trim()) {
     patch.won_reason = input.motivo.trim();
   }
+  const cfAtuais = ((lead as { custom_fields?: Record<string, unknown> }).custom_fields ?? {}) as Record<string, unknown>;
+  if (input.closureNotes?.trim() || (input.desfecho === "lost" && input.motivo)) {
+    patch.custom_fields = {
+      ...cfAtuais,
+      ...(input.desfecho === "lost" && input.motivo ? { closure_reason: input.motivo } : {}),
+      ...(input.closureNotes?.trim() ? { closure_notes: input.closureNotes.trim() } : {}),
+    };
+  }
 
-  const { error: updErr } = await supabase
+  let { error: updErr } = await supabase
     .from("crm_leads")
     .update(patch)
     .eq("id", input.leadId)
     .eq("organization_id", ctx.organization_id);
+
+  // Se o trigger do Postgres rejeitar com lost_reason_invalid (ex.: banco sem a migration aplicada),
+  // executa fallback seguro para 'other' preservando o motivo original em custom_fields.closure_reason:
+  if (updErr && updErr.code === "22023" && updErr.message?.includes("lost_reason_invalid") && input.desfecho === "lost") {
+    patch.lost_reason = "other";
+    patch.custom_fields = {
+      ...cfAtuais,
+      closure_reason: input.motivo,
+      ...(input.closureNotes?.trim() ? { closure_notes: input.closureNotes.trim() } : {}),
+    };
+    const retry = await supabase
+      .from("crm_leads")
+      .update(patch)
+      .eq("id", input.leadId)
+      .eq("organization_id", ctx.organization_id);
+    updErr = retry.error;
+  }
 
   if (updErr) {
     // Rede de segurança (#917) — mesma dos outros três caminhos (arrasto, lote,
@@ -270,6 +335,9 @@ export async function encerraDemanda(
     }
     throw new ApiError(500, "internal_error", undefined, ctx.requestId, updErr.message);
   }
+
+  // Cancelar follow-ups ativos exclusivamente vinculados a este lead/conversa
+  await cancelaFollowupsDoLead(supabase, ctx.organization_id, input.leadId);
 
   const { data: fresh } = await supabase
     .from("crm_leads")

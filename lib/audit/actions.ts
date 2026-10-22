@@ -1177,6 +1177,14 @@ export const AUDIT_ACTIONS = [
   // interruptores, a antecedência e o opt-in de WhatsApp). O número NÃO entra:
   // é dado de contato, e o audit é trilha legível por quem administra.
   "user.task_reminder_prefs_updated",
+  // Módulo Financeiro Integrado: contratos, cobranças e perfis financeiros
+  "financeiro.contrato_criado",
+  "financeiro.contrato_atualizado",
+  "financeiro.cobranca_criada",
+  "financeiro.cobranca_atualizada",
+  "financeiro.cobranca_paga",
+  "financeiro.cobranca_estornada",
+  "financeiro.cliente_atualizado",
 ] as const;
 
 /** Um código de auditoria. Derivado de `AUDIT_ACTIONS` — não redigite a lista. */

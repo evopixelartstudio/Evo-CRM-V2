@@ -22,6 +22,7 @@ function formatError(err: unknown, t: (texto: string) => string): string {
 }
 import { KanbanBoard } from "@/components/kanban/KanbanBoard";
 import { CalendarioDoFunil } from "@/components/kanban/CalendarioDoFunil";
+import { ArquivadosTable } from "@/components/kanban/ArquivadosTable";
 import { FilterBar } from "@/components/kanban/FilterBar";
 import { BulkActionBar } from "@/components/kanban/BulkActionBar";
 import { NewLeadDialog } from "@/components/kanban/NewLeadDialog";
@@ -72,13 +73,9 @@ export function PipelinePageClient({
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [newOpen, setNewOpen] = useState(false);
   /**
-   * A visão do funil (#2770). Quadro é o padrão — é o que todo mundo já
-   * conhece, e a aba nova não pode sequestrar a tela de quem só quer mover
-   * card. O estado é LOCAL e não vai na URL: diferente do filtro (que é
-   * compartilhável e sobrevive a um refresh), a vista é um olhar momentâneo —
-   * e o quadro de volta no mesmo lugar onde ficou é o que se espera ao voltar.
+   * A visão do funil: Quadro (ativo), Calendário ou Arquivados.
    */
-  const [visao, setVisao] = useState<"quadro" | "calendario">("quadro");
+  const [visao, setVisao] = useState<"quadro" | "calendario" | "arquivados">("quadro");
 
   /**
    * Motivo e categoria da perda (#1537): a categoria NÃO vem no lead — ela é
@@ -234,6 +231,20 @@ export function PipelinePageClient({
             >
               {t("Calendário")}
             </button>
+            <button
+              type="button"
+              data-testid="visao-arquivados"
+              aria-pressed={visao === "arquivados"}
+              onClick={() => setVisao("arquivados")}
+              className={cn(
+                "rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors",
+                visao === "arquivados"
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {t("Arquivados")}
+            </button>
           </div>
           <Button onClick={() => setNewOpen(true)} disabled={!data} className="shrink-0">
             <Plus size={16} className="mr-2" /> {t("Novo Lead")}
@@ -251,12 +262,14 @@ export function PipelinePageClient({
           leads={data.leads}
         />
       )}
-      <FilterBar
-        filters={filters}
-        onChange={setFilters}
-        leads={data?.leads ?? []}
-        settings={data?.pipeline.settings}
-      />
+      {visao !== "arquivados" && (
+        <FilterBar
+          filters={filters}
+          onChange={setFilters}
+          leads={data?.leads ?? []}
+          settings={data?.pipeline.settings}
+        />
+      )}
       {error ? (
         <div className="rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm">
           {t("Não consegui carregar este funil:")} {formatError(error, t)}
@@ -274,6 +287,14 @@ export function PipelinePageClient({
           stages={data.stages}
           leads={filteredLeads}
         />
+      ) : visao === "arquivados" ? (
+        <ArquivadosTable
+          pipelineId={pipelineId}
+          stages={data.stages}
+          onReativado={() => {
+            router.refresh();
+          }}
+        />
       ) : (
         <KanbanBoard
           pipelineId={pipelineId}
@@ -287,14 +308,16 @@ export function PipelinePageClient({
           podeRenomearEtapa={ROLE_RANK[role] >= ROLE_RANK.manager}
         />
       )}
-      <BulkActionBar
-        selectedIds={selectedIds}
-        stages={data?.stages ?? []}
-        pipelineId={pipelineId}
-        vocabulary={data?.pipeline.vocabulary ?? null}
-        tagsExistentes={tagsDoQuadro}
-        onClear={() => setSelectedIds([])}
-      />
+      {visao !== "arquivados" && (
+        <BulkActionBar
+          selectedIds={selectedIds}
+          stages={data?.stages ?? []}
+          pipelineId={pipelineId}
+          vocabulary={data?.pipeline.vocabulary ?? null}
+          tagsExistentes={tagsDoQuadro}
+          onClear={() => setSelectedIds([])}
+        />
+      )}
     </div>
   );
 }

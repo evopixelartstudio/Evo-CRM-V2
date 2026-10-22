@@ -25,6 +25,17 @@ import { MOTIVO_DA_TRANSFERENCIA } from "@/lib/leads/motivo-da-perda";
 /** O valor canônico de "outro": a saída de quem não acha o motivo na lista. */
 export const OUTRO = "other";
 
+export const MOTIVOS_PRIORITARIOS: readonly string[] = [
+  "sem_interesse",
+  "sem_resposta",
+  "numero_invalido",
+  "servico_incompativel",
+  "contato_duplicado",
+  "price",
+  "requested_by_customer",
+  "other",
+];
+
 const CANONICOS: readonly string[] = CANONICAL_LOST_REASONS;
 
 /** O mesmo teto do PATCH (`.max(50)`): acima disso a tela não é lista, é rolagem. */
@@ -181,9 +192,14 @@ export interface OpcaoDeMotivo {
  */
 export function opcoesDeMotivoDePerda(motivosCadastrados: readonly string[]): OpcaoDeMotivo[] {
   const doFunil = motivosCadastrados.length > 0;
-  const base: string[] = (doFunil ? [...motivosCadastrados] : [...CANONICOS]).filter(
-    (valor) => valor !== MOTIVO_DA_TRANSFERENCIA,
-  );
+  const base: string[] = (
+    doFunil
+      ? [...motivosCadastrados]
+      : [
+          ...MOTIVOS_PRIORITARIOS,
+          ...CANONICOS.filter((c) => !MOTIVOS_PRIORITARIOS.includes(c)),
+        ]
+  ).filter((valor) => valor !== MOTIVO_DA_TRANSFERENCIA);
   const opcoes: OpcaoDeMotivo[] = base.map((valor) => ({ valor, doFunil }));
   if (!base.includes(OUTRO)) opcoes.push({ valor: OUTRO, doFunil: false });
   return opcoes;

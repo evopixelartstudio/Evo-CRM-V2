@@ -101,6 +101,12 @@ export const CANONICAL_LOST_REASONS = [
    * transferência, CONTA como perda — é oportunidade que foi embora.
    */
   "opted_out_of_messages",
+  /** Motivos padronizados de encerramento do CRM (EVO-CRM-V2) */
+  "sem_interesse",
+  "sem_resposta",
+  "numero_invalido",
+  "servico_incompativel",
+  "contato_duplicado",
 ] as const;
 
 /**
@@ -119,6 +125,11 @@ export const ROTULO_DO_MOTIVO_CANONICO: Record<(typeof CANONICAL_LOST_REASONS)[n
   other: "Outro motivo",
   moved_to_another_pipeline: "Levado para outro funil",
   opted_out_of_messages: "Pediu para não receber mensagens",
+  sem_interesse: "Sem interesse",
+  sem_resposta: "Sem resposta após os follow-ups",
+  numero_invalido: "Número inválido",
+  servico_incompativel: "Serviço incompatível",
+  contato_duplicado: "Contato duplicado",
 };
 
 /** O rótulo pt-BR do motivo: o do canônico, ou o próprio texto do motivo do funil. */
@@ -162,6 +173,11 @@ export const CATEGORIA_PADRAO_DO_MOTIVO: Partial<Record<CanonicalLostReason, Cat
   product_unavailable: "Nós",
   cancelled_by_store: "Nós",
   no_response: "Ausência",
+  sem_interesse: "Cliente",
+  sem_resposta: "Ausência",
+  numero_invalido: "Ausência",
+  servico_incompativel: "Nós",
+  contato_duplicado: "Cliente",
 };
 
 /** A categoria de um valor gravado em `lost_reason`, se o produto tem uma. */
@@ -176,6 +192,8 @@ export function categoriaPadraoDoMotivo(valor: string): CategoriaDePerda | undef
  */
 export const loseLeadSchema = z.object({
   lost_reason: z.string().min(1, "lost_reason é obrigatório").max(500),
+  lost_notes: z.string().max(2000).optional().nullable(),
+  closure_notes: z.string().max(2000).optional().nullable(),
 });
 export type LoseLeadInput = z.infer<typeof loseLeadSchema>;
 

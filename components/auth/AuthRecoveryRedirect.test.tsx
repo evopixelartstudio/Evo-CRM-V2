@@ -8,13 +8,16 @@ describe("AuthRecoveryRedirect", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    delete (window as unknown as { location: unknown }).location;
-    window.location = {
-      ...originalLocation,
-      hash: "",
-      search: "",
-      replace: vi.fn(),
-    } as unknown as Location;
+    Object.defineProperty(window, "location", {
+      value: {
+        ...originalLocation,
+        hash: "",
+        search: "",
+        replace: vi.fn(),
+      },
+      writable: true,
+      configurable: true,
+    });
   });
 
   it("não redireciona quando não há parâmetros de recuperação", () => {

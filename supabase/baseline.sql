@@ -27291,7 +27291,9 @@ declare
                               'cancelled_by_store','cancelled_by_customer','payment_failed','other',
                               'moved_to_another_pipeline',
                               -- migration 0513 (#2049): quem respondeu PARAR. Conta como perda.
-                              'opted_out_of_messages'];
+                              'opted_out_of_messages',
+                              -- migration 0705: motivos padronizados de encerramento do CRM
+                              'sem_interesse','sem_resposta','numero_invalido','servico_incompativel','contato_duplicado'];
   v_pipeline_extra text[];
 begin
   if new.status = 'lost' then
@@ -58595,3 +58597,135 @@ on conflict (model) do update set
   completion_cents_per_million_tokens = excluded.completion_cents_per_million_tokens,
   notes = excluded.notes,
   superseded_at = null;
+
+
+-- ─── 0704: Financeiro Integrado (financial_contracts e financial_invoices) ────
+create table if not exists public.financial_contracts (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  contact_id uuid not null references public.contacts(id) on delete cascade,
+  company_id uuid references public.companies(id) on delete set null,
+  lead_id uuid references public.crm_leads(id) on delete set null,
+  responsible_user_id uuid references auth.users(id) on delete set null,
+
+  title text not null,
+  description text,
+  modality text not null default 'recurring'
+    check (modality in ('one_off', 'installments', 'recurring')),
+  recurrence_period text
+    check (recurrence_period is null or recurrence_period in ('monthly', 'bimonthly', 'quarterly', 'semi_annual', 'annual')),
+
+  total_cents bigint not null default 0 check (total_cents >= 0),
+  currency text not null default 'BRL' check (char_length(currency) = 3),
+
+  contract_date date not null default current_date,
+  start_date date not null default current_date,
+  end_date date,
+  due_day integer check (due_day is null or (due_day >= 1 and due_day <= 31)),
+
+  status text not null default 'active'
+    check (status in ('draft', 'active', 'paused', 'completed', 'cancelled')),
+
+  notes text,
+  custom_fields jsonb not null default '{}'::jsonb,
+
+  created_by_user_id uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists financial_contracts_org_status_idx
+  on public.financial_contracts (organization_id, status);
+create index if not exists financial_contracts_org_contact_idx
+  on public.financial_contracts (organization_id, contact_id);
+create index if not exists financial_contracts_org_lead_idx
+  on public.financial_contracts (organization_id, lead_id)
+  where lead_id is not null;
+
+create table if not exists public.financial_invoices (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  contract_id uuid references public.financial_contracts(id) on delete set null,
+  contact_id uuid references public.contacts(id) on delete set null,
+  lead_id uuid references public.crm_leads(id) on delete set null,
+
+  account_id uuid references public.financial_accounts(id) on delete set null,
+  account_plan_id uuid references public.account_plans(id) on delete set null,
+
+  direction text not null default 'in' check (direction in ('in', 'out')),
+  category text default 'outros',
+  title text not null,
+
+  contracted_cents bigint not null default 0 check (contracted_cents >= 0),
+  amount_cents bigint not null default 0 check (amount_cents >= 0),
+  paid_cents bigint not null default 0 check (paid_cents >= 0),
+  currency text not null default 'BRL' check (char_length(currency) = 3),
+
+  due_date date not null default current_date,
+  paid_at timestamptz,
+
+  payment_method text check (
+    payment_method is null or
+    payment_method in ('pix', 'credit_card', 'debit_card', 'boleto', 'transfer', 'cash', 'other')
+  ),
+
+  installment_number integer default 1 check (installment_number >= 1),
+  total_installments integer default 1 check (total_installments >= 1),
+
+  status text not null default 'pending' check (
+    status in ('pending', 'paid', 'partial', 'overdue', 'cancelled', 'reversed')
+  ),
+
+  notes text,
+  reverses_invoice_id uuid references public.financial_invoices(id) on delete set null,
+
+  created_by_user_id uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists financial_invoices_org_status_due_idx
+  on public.financial_invoices (organization_id, status, due_date desc);
+create index if not exists financial_invoices_org_contact_idx
+  on public.financial_invoices (organization_id, contact_id);
+create index if not exists financial_invoices_contract_idx
+  on public.financial_invoices (contract_id)
+  where contract_id is not null;
+
+alter table public.financial_entries
+  add column if not exists contract_id uuid references public.financial_contracts(id) on delete set null;
+alter table public.financial_entries
+  add column if not exists contact_id uuid references public.contacts(id) on delete set null;
+
+do $$
+declare t text;
+begin
+  foreach t in array array['financial_contracts', 'financial_invoices'] loop
+    execute format('alter table public.%I enable row level security', t);
+    execute format('drop policy if exists tenant_isolation_%I_all on public.%I', t, t);
+    execute format($f$
+      create policy tenant_isolation_%I_all on public.%I
+        for all
+        using (organization_id in (select public.fn_user_org_ids()) or public.fn_is_platform_admin())
+        with check (
+          public.fn_is_platform_admin()
+          or (organization_id in (select public.fn_user_org_ids())
+              and public.fn_role_at_least(organization_id, 'agent'))
+        )
+    $f$, t, t);
+    execute format('revoke all on public.%I from anon', t);
+  end loop;
+end $$;
+
+do $$
+declare t text;
+begin
+  if exists (select 1 from pg_proc where proname = 'fn_touch_updated_at') then
+    foreach t in array array['financial_contracts', 'financial_invoices'] loop
+      execute format('drop trigger if exists trg_%I_touch on public.%I', t, t);
+      execute format(
+        'create trigger trg_%I_touch before update on public.%I for each row execute function public.fn_touch_updated_at()',
+        t, t);
+    end loop;
+  end if;
+end $$;

@@ -18,6 +18,7 @@ import type { Idioma } from "@/lib/i18n/idiomas";
 import { roleAtLeast } from "@/lib/auth/types";
 import { canonicalPhoneBR, phoneLookupVariants } from "@/lib/channels/phone-variants";
 import { encontrarContatoPorTelefone } from "@/lib/channels/contato-por-telefone";
+import { localizarContatoExistente } from "@/lib/contacts/deduplicacao";
 import { camposCpfParaGravar, hashCpf } from "@/lib/contacts/cpf";
 import type { Contact } from "@/lib/types/contacts";
 import { ensureConversation, sessaoProntaParaEnvio } from "@/lib/automation/start-conversation";
@@ -514,19 +515,23 @@ export async function createContactHandler(
     // por `organization_id` — o id devolvido no `details` nunca vem do corpo da
     // requisição — e qualquer outro conflito continua no 500 de sempre.
     const telefoneDoInsert = insertRow.phone_number as string | null;
-    if (insErr.code === "23505" && telefoneDoInsert) {
-      const existente = await encontrarContatoPorTelefone(
-        supabase,
-        ctx.organization_id,
-        telefoneDoInsert,
-      );
+    if (insErr.code === "23505") {
+      const existente = await localizarContatoExistente(supabase, ctx.organization_id, {
+        phone: telefoneDoInsert,
+        email: insertRow.email as string | null,
+      });
       if (existente) {
         throw new ApiError(
           409,
           "contact_exists",
           { contact_id: existente.id },
           ctx.requestId,
-          traduzir("Já existe um contato com este telefone.", ctx.idioma ?? "pt-BR"),
+          traduzir(
+            existente.phone_number === telefoneDoInsert
+              ? "Já existe um contato com este telefone."
+              : "Já existe um contato com este e-mail.",
+            ctx.idioma ?? "pt-BR",
+          ),
         );
       }
     }
