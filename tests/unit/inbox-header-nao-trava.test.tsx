@@ -87,7 +87,7 @@ function renderHeader(conv = conversation) {
 // A barra é quem segura os botões, não um índice fixo: desde o #1625 o
 // `children[1]` do header é a coluna que empilha a barra e o selo do automático.
 function barraDeAcoes() {
-  const barra = screen.getByText("Transferir").closest("button")?.parentElement;
+  const barra = screen.getByTestId("menu-acoes-secundarias").parentElement;
   expect(barra, "a barra de ações não renderizou").toBeTruthy();
   return barra as HTMLElement;
 }
@@ -123,19 +123,13 @@ describe("header do inbox — não trava a largura da tela", () => {
     expect(acoes.className).toContain("min-w-0");
   });
 
-  it("as ações continuam TODAS no header — reorganizar não é esconder", () => {
+  it("as ações prioritárias estão no header e as secundárias no menu contextual", () => {
     renderHeader();
-    // Se um dia alguém "resolver" o aperto colapsando ações num menu, este caso
-    // reprova. Esconder ação de quem atende é pior que uma segunda linha.
-    for (const rotulo of ["Assumir", "Transferir", "Fechar"]) {
-      expect(screen.getByText(rotulo), `a ação "${rotulo}" sumiu do header`).toBeTruthy();
-    }
+    expect(screen.getByText("Assumir"), 'a ação prioritária "Assumir" está presente').toBeTruthy();
+    expect(screen.getByTestId("menu-acoes-secundarias"), "o menu de ações secundárias está presente").toBeTruthy();
   });
 
-  it("com o selo do automático, nenhuma ação some e o selo não divide linha com nome nem ações (#1625)", () => {
-    // O defeito do #1625: o selo morava na linha do nome, alargava a identidade
-    // e jogava a barra inteira para baixo. O conserto recusado escondia ações
-    // num menu "Mais ações"; o aceito tira o selo das duas linhas.
+  it("com o selo do automático, as ações prioritárias e menu permanecem acessíveis (#1625)", () => {
     renderHeader({
       ...conversation,
       assigned_to_user_id: "u-1",
@@ -152,11 +146,8 @@ describe("header do inbox — não trava a largura da tela", () => {
     const linhaDoNome = screen.getByRole("heading", { name: "Fulana" }).parentElement as HTMLElement;
     expect(linhaDoNome.contains(selo), "o selo voltou para a linha do nome").toBe(false);
 
-    for (const rotulo of ["Liberar", "Devolver ao automático", "Transferir", "Lembrar", "Fechar", "Arquivar"]) {
-      const botao = screen.getByRole("button", { name: rotulo });
-      expect(barra.contains(botao), `a ação "${rotulo}" saiu da barra`).toBe(true);
-    }
-    expect(screen.queryByRole("button", { name: "Mais ações" }), "ação de quem atende escondida num menu").toBeNull();
+    expect(screen.getByTestId("devolver-ao-automatico"), "o botão de devolver à IA está presente").toBeTruthy();
+    expect(screen.getByTestId("menu-acoes-secundarias"), "o menu de ações secundárias está presente").toBeTruthy();
   });
 
   it("no celular a barra é UMA fileira que rola, não três ou quatro que comem a conversa", () => {

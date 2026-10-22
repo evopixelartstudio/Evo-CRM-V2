@@ -59,6 +59,7 @@ import { emitLeadActivity } from "@/lib/leads/activity-emitter";
 import { resolveActiveLeadForContact, type LeadCandidate } from "@/lib/leads/active-lead";
 import { logger } from "@/lib/logger";
 import { autorizarContatoParaIA } from "@/lib/ai/elegibilidade/autorizacao";
+import { agenteAtende } from "@/lib/ai/agents/no-ar";
 
 import { lerContinuidadeHumana, type ContinuidadeHumana } from "./continuidade";
 
@@ -84,6 +85,11 @@ export type RetomadaFalha =
    * (cron `handoff-devolucao`) em vez de como erro.
    */
   | "contato_sempre_humano"
+  /**
+   * O agente especificado para a transferência não foi encontrado ou está
+   * inativo/desabilitado na organização.
+   */
+  | "agent_not_found"
   /**
    * A leitura da marca permanente falhou. Fail-closed: sem ler `ai_opt_out` não
    * dá para provar que a devolução é segura, então nada é escrito — mesmo
@@ -121,17 +127,46 @@ interface ConversaRow {
   assigned_to_user_id: string | null;
   assignee_kind: string | null;
   bot_silenced_until: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+export interface DevolverAtendimentoInput {
+  conversationId: string;
+  origem?: OrigemDaRetomada;
+  targetAgentId?: string | null;
+  contextNote?: string | null;
+  objective?: string | null;
+  summary?: string | null;
 }
 
 export async function devolverAtendimentoAoAgente(
   deps: RetomadaDeps,
-  input: { conversationId: string; origem?: OrigemDaRetomada },
+  input: DevolverAtendimentoInput,
 ): Promise<RetomadaResultado> {
   const { supabase, organizationId } = deps;
 
+  // Se um agente alvo foi especificado, valida se ele pertence à org e está ativo
+  if (input.targetAgentId) {
+    const { data: agentData, error: agentErr } = await supabase
+      .from("ai_agents")
+      .select("id, name, published_version_id, kind, is_active, paused_at, archived_at")
+      .eq("id", input.targetAgentId)
+      .eq("organization_id", organizationId)
+      .is("archived_at", null)
+      .maybeSingle();
+
+    if (agentErr || !agentData || !agenteAtende(agentData)) {
+      return {
+        ok: false,
+        erro: "agent_not_found",
+        detalhe: agentErr?.message ?? "Agente selecionado não existe ou não está ativo nesta organização.",
+      };
+    }
+  }
+
   const { data: convData, error: convErr } = await supabase
     .from("conversations")
-    .select("id, contact_id, status, assigned_to_user_id, assignee_kind, bot_silenced_until")
+    .select("id, contact_id, status, assigned_to_user_id, assignee_kind, bot_silenced_until, metadata")
     .eq("id", input.conversationId)
     .eq("organization_id", organizationId)
     .maybeSingle();
@@ -224,16 +259,41 @@ export async function devolverAtendimentoAoAgente(
   const proximoStatus = STATUS_REATIVAVEIS.has(conv.status ?? "")
     ? "ai_handling"
     : (conv.status ?? "open");
+
+  const updateFields: Record<string, unknown> = {
+    bot_silenced_until: null,
+    last_handoff_at: null,
+    last_handoff_reason: null,
+    assignee_kind: "ai",
+    status: proximoStatus,
+    status_changed_at: new Date().toISOString(),
+  };
+
+  if (input.targetAgentId) {
+    updateFields.active_ai_agent_id = input.targetAgentId;
+    updateFields.active_agent_set_at = new Date().toISOString();
+  }
+
+  const aiTransferInfo = (input.targetAgentId || input.contextNote || input.objective || input.summary) ? {
+    from_user_id: deps.actor.type === "user" ? deps.actor.id : null,
+    to_agent_id: input.targetAgentId ?? null,
+    transferred_at: new Date().toISOString(),
+    objective: input.objective ?? null,
+    context_note: input.contextNote ?? null,
+    summary: input.summary ?? null,
+  } : null;
+
+  if (aiTransferInfo) {
+    const existingMeta = (conv.metadata && typeof conv.metadata === "object") ? conv.metadata : {};
+    updateFields.metadata = {
+      ...existingMeta,
+      ai_transfer: aiTransferInfo,
+    };
+  }
+
   const { data: atualizada, error: updErr } = await supabase
     .from("conversations")
-    .update({
-      bot_silenced_until: null,
-      last_handoff_at: null,
-      last_handoff_reason: null,
-      assignee_kind: "ai",
-      status: proximoStatus,
-      status_changed_at: new Date().toISOString(),
-    })
+    .update(updateFields)
     .eq("id", input.conversationId)
     .eq("organization_id", organizationId)
     .is("assigned_to_user_id", null)
@@ -304,8 +364,8 @@ export async function devolverAtendimentoAoAgente(
   }
 
   // (5) O input estruturado que a IA lê para retomar (invariante 2 da doutrina).
-  if (conv.contact_id !== null && continuidade.houveAtendimentoHumano) {
-    await gravarCheckpointDeRetomada(supabase, organizationId, conv.contact_id, continuidade);
+  if (conv.contact_id !== null && (continuidade.houveAtendimentoHumano || aiTransferInfo !== null)) {
+    await gravarCheckpointDeRetomada(supabase, organizationId, conv.contact_id, continuidade, aiTransferInfo);
   }
 
   // (6) Passagem de atendimento é evento de vida do negócio — a ida já emitia
@@ -334,6 +394,9 @@ export async function devolverAtendimentoAoAgente(
       houve_atendimento_humano: continuidade.houveAtendimentoHumano,
       decisoes: continuidade.decisoes.length,
       notas: continuidade.notas.length,
+      target_agent_id: input.targetAgentId ?? null,
+      objective: input.objective ?? null,
+      has_context_note: !!input.contextNote,
       ...(input.origem ? { automatica: true, apos_minutos: input.origem.automatica.minutos } : {}),
     },
   });
@@ -394,6 +457,11 @@ async function gravarCheckpointDeRetomada(
   organizationId: string,
   contactId: string,
   continuidade: ContinuidadeHumana,
+  transferInfo?: {
+    objective?: string | null;
+    context_note?: string | null;
+    summary?: string | null;
+  } | null,
 ): Promise<void> {
   const { data: anteriorData } = await supabase
     .from("lead_checkpoints")
@@ -411,6 +479,20 @@ async function gravarCheckpointDeRetomada(
   } | null;
 
   const acumulado = (anterior?.rolling_summary ?? "").trim();
+
+  let textoParaAcumular = continuidade.resumo;
+  if (transferInfo && (transferInfo.context_note || transferInfo.objective || transferInfo.summary)) {
+    const partesTransfer: string[] = [
+      "=== INSTRUÇÕES DA TRANSFERÊNCIA PARA A IA ===",
+      transferInfo.objective ? `Objetivo: ${transferInfo.objective}` : "",
+      transferInfo.context_note ? `O que a IA precisa saber: ${transferInfo.context_note}` : "",
+      transferInfo.summary ? `Resumo recente: ${transferInfo.summary}` : "",
+      "Diretrizes mandatórias: continue o atendimento naturalmente a partir do ponto atual. Não envie saudações repetidas nem repita perguntas já respondidas. Respeite todas as decisões e instruções do atendente acima.",
+    ].filter(Boolean);
+    const blocoTransfer = partesTransfer.join("\n");
+    textoParaAcumular = textoParaAcumular ? `${textoParaAcumular}\n\n${blocoTransfer}` : blocoTransfer;
+  }
+
   const { error } = await supabase.from("lead_checkpoints").insert({
     organization_id: organizationId,
     contact_id: contactId,
@@ -420,7 +502,7 @@ async function gravarCheckpointDeRetomada(
     objections: anterior?.objections ?? [],
     next_action: continuidade.pendenciaComOCliente ?? anterior?.next_action ?? null,
     rolling_summary:
-      acumulado === "" ? continuidade.resumo : `${acumulado}\n\n${continuidade.resumo}`,
+      acumulado === "" ? textoParaAcumular : `${acumulado}\n\n${textoParaAcumular}`,
   });
   if (error) {
     // Sem o checkpoint o agente volta CEGO — isso é degradação de verdade, e

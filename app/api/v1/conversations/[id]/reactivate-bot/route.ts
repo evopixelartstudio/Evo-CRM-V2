@@ -20,6 +20,7 @@ import { requireSupportWrite } from "@/lib/impersonate/support";
  */
 import { randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
+import { z } from "zod";
 
 import { ok, fail } from "@/lib/api/wrappers";
 import { requireRole } from "@/lib/auth/require-role";
@@ -29,11 +30,18 @@ import { traduzir } from "@/lib/i18n/dicionario";
 
 export const dynamic = "force-dynamic";
 
+const TransferBodySchema = z.object({
+  agent_id: z.string().uuid().optional().nullable(),
+  context_note: z.string().max(4000).optional().nullable(),
+  objective: z.string().max(500).optional().nullable(),
+  summary: z.string().max(4000).optional().nullable(),
+});
+
 interface RouteCtx {
   params: Promise<{ id: string }>;
 }
 
-export async function POST(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
+export async function POST(req: NextRequest, ctx: RouteCtx): Promise<Response> {
   const supportDenied = await requireSupportWrite();
   if (supportDenied) return supportDenied;
 
@@ -45,6 +53,17 @@ export async function POST(_req: NextRequest, ctx: RouteCtx): Promise<Response> 
   const t = (texto: string) => traduzir(texto, authz.user.idioma);
   const { user: authUser, org: activeOrg } = authz;
 
+  let body: z.infer<typeof TransferBodySchema> = {};
+  try {
+    const raw = await req.json().catch(() => ({}));
+    const parsed = TransferBodySchema.safeParse(raw);
+    if (parsed.success) {
+      body = parsed.data;
+    }
+  } catch {
+    body = {};
+  }
+
   const supabase = await createClient();
 
   const resultado = await devolverAtendimentoAoAgente(
@@ -54,12 +73,26 @@ export async function POST(_req: NextRequest, ctx: RouteCtx): Promise<Response> 
       actor: { type: "user", id: authUser.id, role: activeOrg.role },
       requestId,
     },
-    { conversationId: id },
+    {
+      conversationId: id,
+      targetAgentId: body.agent_id ?? null,
+      contextNote: body.context_note ?? null,
+      objective: body.objective ?? null,
+      summary: body.summary ?? null,
+    },
   );
 
   if (!resultado.ok) {
     if (resultado.erro === "conversation_not_found") {
       return fail("not_found", t("Conversa não encontrada."), 404, { requestId });
+    }
+    if (resultado.erro === "agent_not_found") {
+      return fail(
+        "bad_request",
+        resultado.detalhe ?? t("Agente selecionado não existe ou não está ativo nesta organização."),
+        400,
+        { requestId },
+      );
     }
     if (resultado.erro === "assignment_conflict") {
       return fail(

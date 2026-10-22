@@ -253,6 +253,18 @@ export async function resolveTurnAgent(
 
     const router = await _loadActiveRouter(db, input.tenantId, input.channelSessionId);
     if (router === null) {
+      if (input.stickyAgentId) {
+        const config = await _loadAgentById(db, input.tenantId, input.stickyAgentId);
+        if (config !== null) {
+          return {
+            config,
+            routerId: null,
+            intentName: input.stickyIntent,
+            confidence: null,
+            outcome: 'sticky',
+          };
+        }
+      }
       return {
         config: await _loadAgentBySession(db, input.tenantId, input.channelSessionId),
         routerId: null,

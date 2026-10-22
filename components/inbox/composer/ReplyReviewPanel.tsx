@@ -8,6 +8,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { useT } from "@/hooks/i18n/useT";
 import { motivoDoVeto, sugestaoParaMostrar } from "@/lib/agent-engine/agent/sugestao-de-resposta";
+import { Sparkle, CaretDown, CaretUp } from "@/lib/ui/icons";
+import { cn } from "@/lib/utils";
 type Draft = {
   id: string;
   revision: string;
@@ -43,7 +45,9 @@ export function ReplyReviewPanel({
       draftId: string;
       message: string;
       kind: "success" | "error";
-    } | null>(null);
+    } | null>(null),
+    [recolhido, setRecolhido] = useState<boolean>(false);
+
   // Antes: `drafts[0]`, o mais recente, QUALQUER que fosse o estado dele — então
   // uma sugestão rejeitada ficava na tela para sempre, sem botão de fechar.
   const draft = sugestaoParaMostrar(query.data?.data.drafts);
@@ -51,6 +55,16 @@ export function ReplyReviewPanel({
   // A causa do veto, em linguagem de quem opera (issue #2975): sem código
   // conhecido, a frase genérica de sempre continua sendo a verdade.
   const motivo = draft ? motivoDoVeto(draft.error_code) : null;
+
+  const [prevDraftId, setPrevDraftId] = useState<string | null>(null);
+  const currentDraftId = draft?.id ?? null;
+  if (currentDraftId !== prevDraftId) {
+    setPrevDraftId(currentDraftId);
+    if (draft) {
+      setRecolhido(false);
+    }
+  }
+
   async function generate() {
     setNotice(null);
     setBusy(true);
@@ -109,24 +123,47 @@ export function ReplyReviewPanel({
   };
   return (
     <section
-      className="mb-3 space-y-2 rounded-md border bg-muted/30 p-3"
+      className={cn(
+        "mb-2 rounded-md border border-border/80 bg-muted/20 transition-all",
+        recolhido ? "p-2" : "p-3 space-y-2",
+      )}
       aria-label={t("Assistência do agente")}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-medium">
-          {t(draft ? (statuses[draft.status] ?? "Assistência do agente") : "Assistência do agente")}
-        </p>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={disabled || busy}
-          onClick={generate}
-        >
-          {t(busy ? "Preparando…" : "Sugerir resposta")}
-        </Button>
+        <div className="flex items-center gap-1.5">
+          <Sparkle size={14} className="text-primary" aria-hidden />
+          <p className="text-xs font-semibold">
+            {t(draft ? (statuses[draft.status] ?? "Assistência do agente") : "Assistência do agente")}
+          </p>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs"
+            disabled={disabled || busy}
+            onClick={() => {
+              setRecolhido(false);
+              void generate();
+            }}
+          >
+            {t(busy ? "Preparando…" : "Sugerir resposta")}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0 text-muted-foreground"
+            onClick={() => setRecolhido(!recolhido)}
+            title={recolhido ? t("Expandir assistência") : t("Recolher assistência")}
+            aria-label={recolhido ? t("Expandir assistência") : t("Recolher assistência")}
+          >
+            {recolhido ? <CaretDown size={14} /> : <CaretUp size={14} />}
+          </Button>
+        </div>
       </div>
-      {draft && (
+      {!recolhido && draft && (
         <>
           <p className="text-xs text-muted-foreground">
             {t(

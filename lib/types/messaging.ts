@@ -17,6 +17,10 @@ export interface Conversation {
   current_demanda_id?: string | null;
   assigned_to_user_id: string | null;
   /**
+   * Agente de IA especificamente atribuído a esta conversa (ou null para usar roteador padrão).
+   */
+  active_ai_agent_id?: string | null;
+  /**
    * Cópia desnormalizada do nome de quem atende (migration 0202), escrita por
    * `fn_conversation_assign` no mesmo UPDATE que grava `assigned_to_user_id`.
    * `null` quando não atribuída, ou quando o backfill/lookup não alcançou —

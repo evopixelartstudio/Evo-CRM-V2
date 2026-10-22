@@ -180,7 +180,7 @@ interface InboxLayoutProps {
 export function InboxLayout({
   initialSelectedId = null,
   rascunho = null,
-  painelRecolhidoInicial = false,
+  painelRecolhidoInicial = true,
 }: InboxLayoutProps = {}) {
   const t = useT();
   const { activeOrg, user } = useAuth();
@@ -854,6 +854,8 @@ export function InboxLayout({
               }
               buscaAberta={buscaAberta}
               botaoBuscaRef={botaoBuscaRef}
+              onAlternarPainelDoContato={alternarPainelDoContato}
+              painelRecolhido={painelRecolhido}
             />
             {buscaAberta && (
               <div className="flex items-center gap-2 border-b border-border px-4 py-1.5">

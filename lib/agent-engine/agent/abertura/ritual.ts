@@ -188,6 +188,14 @@ export function buildOpeningMessage(
     '',
     ...ritualBlocks(previous, leadState, context, notesIndexBlock, projeta, compromissosBlock, origemBlock),
     '',
+    ...(previous?.rolling_summary?.includes("=== INSTRUÇÕES DA TRANSFERÊNCIA PARA A IA ===")
+      ? [
+          '## Continuidade de atendimento transferido pelo operador humano',
+          'Este atendimento foi transferido por um atendente humano com instruções específicas no resumo acima.',
+          'NÃO reinicie o atendimento, NÃO envie saudações repetidas, NÃO repita perguntas que o cliente já respondeu e respeite integralmente o contexto e objetivo instruídos.',
+          '',
+        ]
+      : []),
     ...mensagemAtualBlock,
     '',
     'Responda ao lead usando a tool send_message — NUNCA escreva a resposta como texto direto',
