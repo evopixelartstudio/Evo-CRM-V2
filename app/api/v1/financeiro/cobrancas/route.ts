@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest): Promise<Response> {
   const requestId = randomUUID();
-  const authz = await requireRole("viewer", { requestId, resource: "financeiro" });
+  const authz = await requireRole("agent", { requestId, resource: "financeiro" });
   if (!authz.ok) return authz.response;
 
   const url = new URL(req.url);
@@ -93,24 +93,84 @@ export async function POST(req: NextRequest): Promise<Response> {
   const paidAt = isPaid ? new Date().toISOString() : null;
 
   const supabase = await createClient();
+
+  // Validar isolamento multi-tenant de todas as chaves estrangeiras informadas
+  if (payload.contact_id) {
+    const { data: ct } = await supabase
+      .from("contacts")
+      .select("id")
+      .eq("id", payload.contact_id)
+      .eq("organization_id", authz.org.orgId)
+      .maybeSingle();
+    if (!ct) {
+      return fail("validation_failed", "Contato não pertence a esta organização.", 422, { requestId });
+    }
+  }
+
+  if (payload.contract_id) {
+    const { data: contract } = await supabase
+      .from("financial_contracts" as any)
+      .select("id")
+      .eq("id", payload.contract_id)
+      .eq("organization_id", authz.org.orgId)
+      .maybeSingle();
+    if (!contract) {
+      return fail("validation_failed", "Contrato não pertence a esta organização.", 422, { requestId });
+    }
+  }
+
+  if (payload.account_id) {
+    const { data: acc } = await supabase
+      .from("financial_accounts")
+      .select("id")
+      .eq("id", payload.account_id)
+      .eq("organization_id", authz.org.orgId)
+      .maybeSingle();
+    if (!acc) {
+      return fail("validation_failed", "Conta financeira não pertence a esta organização.", 422, { requestId });
+    }
+  }
+
+  if (payload.account_plan_id) {
+    const { data: plan } = await supabase
+      .from("account_plans")
+      .select("id")
+      .eq("id", payload.account_plan_id)
+      .eq("organization_id", authz.org.orgId)
+      .maybeSingle();
+    if (!plan) {
+      return fail("validation_failed", "Plano de contas não pertence a esta organização.", 422, { requestId });
+    }
+  }
+
+  const direction = payload.type === "expense" ? "out" : "in";
+  const installments = payload.installment_total ?? payload.total_installments ?? 1;
+
   const insertData = {
     organization_id: authz.org.orgId,
     contract_id: payload.contract_id ?? null,
     contact_id: payload.contact_id ?? null,
     account_id: payload.account_id ?? null,
     account_plan_id: payload.account_plan_id ?? null,
+    direction,
     type: payload.type,
+    category: payload.category ?? "outros",
     title: payload.title,
+    contracted_cents: payload.amount_cents,
     amount_cents: payload.amount_cents,
     billed_cents: payload.billed_cents,
     paid_cents: paidCents,
+    currency: payload.currency ?? "BRL",
     due_date: payload.due_date,
     paid_at: paidAt,
     payment_method: payload.payment_method ?? null,
     installment_number: payload.installment_number ?? 1,
-    installment_total: payload.installment_total ?? 1,
+    total_installments: installments,
+    installment_total: installments,
     status: payload.status,
     notes: payload.notes ?? null,
+    metadata: { type: payload.type, category: payload.category },
+    custom_fields: { type: payload.type, category: payload.category },
   };
 
   const { data: invoice, error } = await supabase

@@ -27,7 +27,7 @@ export async function GET(
 ): Promise<Response> {
   const params = await props.params;
   const requestId = randomUUID();
-  const authz = await requireRole("viewer", { requestId, resource: "financeiro" });
+  const authz = await requireRole("agent", { requestId, resource: "financeiro" });
   if (!authz.ok) return authz.response;
 
   const supabase = await createClient();
@@ -77,12 +77,20 @@ export async function PATCH(
 
   const supabase = await createClient();
 
+  const updateData: Record<string, unknown> = {
+    ...parsed.data,
+    updated_at: new Date().toISOString(),
+  };
+  if (parsed.data.service_name) {
+    updateData.title = parsed.data.service_name;
+  }
+  if (parsed.data.amount_cents !== undefined) {
+    updateData.total_cents = parsed.data.amount_cents;
+  }
+
   const { data: updated, error } = await supabase
     .from("financial_contracts" as any)
-    .update({
-      ...parsed.data,
-      updated_at: new Date().toISOString(),
-    })
+    .update(updateData)
     .eq("id", params.id)
     .eq("organization_id", authz.org.orgId)
     .select()

@@ -4,6 +4,7 @@
 -- pertence aos motivos canônicos ou aos motivos estendidos configurados no funil.
 -- Esta migration adiciona os cinco novos motivos padronizados ao array de canônicos,
 -- evitando recusa com 22023 quando o operador encerra oportunidades com estas opções.
+-- Privilégios de execução seguem o princípio de menor privilégio (revogado de anon e public).
 
 create or replace function public.fn_validate_lost_reason_required() returns trigger
     language plpgsql
@@ -52,5 +53,4 @@ begin
 end$$;
 
 revoke execute on function public.fn_validate_lost_reason_required() from public, anon;
-grant execute on function public.fn_validate_lost_reason_required() to anon, authenticated, service_role;
-
+grant execute on function public.fn_validate_lost_reason_required() to authenticated, service_role;

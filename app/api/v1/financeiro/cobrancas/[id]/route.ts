@@ -25,7 +25,7 @@ export async function GET(
 ): Promise<Response> {
   const params = await props.params;
   const requestId = randomUUID();
-  const authz = await requireRole("viewer", { requestId, resource: "financeiro" });
+  const authz = await requireRole("agent", { requestId, resource: "financeiro" });
   if (!authz.ok) return authz.response;
 
   const supabase = await createClient();
@@ -67,12 +67,17 @@ export async function PATCH(
   }
 
   const supabase = await createClient();
+  const updateData: Record<string, unknown> = {
+    ...parsed.data,
+    updated_at: new Date().toISOString(),
+  };
+  if (parsed.data.billed_cents !== undefined) {
+    updateData.amount_cents = parsed.data.billed_cents;
+  }
+
   const { data: updated, error } = await supabase
     .from("financial_invoices" as any)
-    .update({
-      ...parsed.data,
-      updated_at: new Date().toISOString(),
-    })
+    .update(updateData)
     .eq("id", params.id)
     .eq("organization_id", authz.org.orgId)
     .select()

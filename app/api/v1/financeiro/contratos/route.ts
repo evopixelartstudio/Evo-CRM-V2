@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest): Promise<Response> {
   const requestId = randomUUID();
-  const authz = await requireRole("viewer", { requestId, resource: "financeiro" });
+  const authz = await requireRole("agent", { requestId, resource: "financeiro" });
   if (!authz.ok) return authz.response;
 
   const url = new URL(req.url);
@@ -98,7 +98,7 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const supabase = await createClient();
 
-  // 1. Verificar se o contato pertence à organização
+  // 1. Validar que entidades relacionadas pertencem à mesma organização
   const { data: contact, error: contactErr } = await supabase
     .from("contacts")
     .select("id, custom_fields")
@@ -110,13 +110,29 @@ export async function POST(req: NextRequest): Promise<Response> {
     return fail("not_found", "Contato/Cliente não encontrado nesta organização.", 404, { requestId });
   }
 
-  // 2. Inserir contrato
+  if (lead_id) {
+    const { data: lead } = await supabase
+      .from("crm_leads")
+      .select("id")
+      .eq("id", lead_id)
+      .eq("organization_id", authz.org.orgId)
+      .maybeSingle();
+
+    if (!lead) {
+      return fail("validation_failed", "Negócio/Lead não pertence a esta organização.", 422, { requestId });
+    }
+  }
+
+  // 2. Inserir contrato com compatibilidade bidirecional de colunas
+  const contractTitle = service_name || "Contrato de Serviço";
   const contractInsert = {
     organization_id: authz.org.orgId,
     contact_id,
     lead_id: lead_id ?? null,
-    service_name,
+    title: contractTitle,
+    service_name: contractTitle,
     description: description ?? null,
+    total_cents: amount_cents,
     amount_cents,
     modality,
     recurrence_period: recurrence_period ?? null,
@@ -128,6 +144,8 @@ export async function POST(req: NextRequest): Promise<Response> {
     responsible_user_id: responsible_user_id ?? authz.user.id,
     status: "active",
     notes: notes ?? null,
+    metadata: { service_name: contractTitle, modality, installments_count },
+    custom_fields: { service_name: contractTitle, modality, installments_count },
   };
 
   const { data: contract, error: contractInsertErr } = await supabase
@@ -175,13 +193,16 @@ export async function POST(req: NextRequest): Promise<Response> {
         organization_id: authz.org.orgId,
         contract_id: (contract as any).id,
         contact_id,
+        direction: "in",
         type: "income",
         title: p.title,
         amount_cents: p.amount_cents,
+        contracted_cents: p.amount_cents,
         billed_cents: p.billed_cents,
         paid_cents: 0,
         due_date: p.due_date,
         installment_number: p.installment_number,
+        total_installments: p.installment_total,
         installment_total: p.installment_total,
         status: "pending",
       }));

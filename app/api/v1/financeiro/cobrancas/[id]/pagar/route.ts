@@ -92,21 +92,30 @@ export async function POST(
   // 3. Opcional: registrar lançamento no extrato financeiro (financial_entries)
   const targetAccountId = account_id || inv.account_id;
   if (targetAccountId) {
-    await supabase.from("financial_entries").insert({
-      organization_id: authz.org.orgId,
-      account_id: targetAccountId,
-      account_plan_id: inv.account_plan_id ?? null,
-      direction: inv.type === "income" ? "in" : "out",
-      amount_cents: valor_pago_cents,
-      description: `${inv.type === "income" ? "Recebimento" : "Pagamento"}: ${inv.title}`,
-      entry_date: (effectivePaidAt.split("T")[0] as string) || (new Date().toISOString().split("T")[0] as string),
-      status: "paid",
-      paid_at: effectivePaidAt,
-      origin: "manual",
-      created_by_user_id: authz.user.id,
-      contract_id: inv.contract_id ?? null,
-      contact_id: inv.contact_id ?? null,
-    } as any);
+    const { data: acc } = await supabase
+      .from("financial_accounts")
+      .select("id")
+      .eq("id", targetAccountId)
+      .eq("organization_id", authz.org.orgId)
+      .maybeSingle();
+
+    if (acc) {
+      await supabase.from("financial_entries").insert({
+        organization_id: authz.org.orgId,
+        account_id: targetAccountId,
+        account_plan_id: inv.account_plan_id ?? null,
+        direction: (inv.type === "income" || inv.direction === "in") ? "in" : "out",
+        amount_cents: valor_pago_cents,
+        description: `${(inv.type === "income" || inv.direction === "in") ? "Recebimento" : "Pagamento"}: ${inv.title}`,
+        entry_date: (effectivePaidAt.split("T")[0] as string) || (new Date().toISOString().split("T")[0] as string),
+        status: "paid",
+        paid_at: effectivePaidAt,
+        origin: "manual",
+        created_by_user_id: authz.user.id,
+        contract_id: inv.contract_id ?? null,
+        contact_id: inv.contact_id ?? null,
+      } as any);
+    }
   }
 
   // 4. Se tiver contato, verificar se ainda há faturas vencidas em atraso
@@ -127,6 +136,7 @@ export async function POST(
       .from("contacts")
       .select("custom_fields")
       .eq("id", inv.contact_id)
+      .eq("organization_id", authz.org.orgId)
       .maybeSingle();
 
     if (contact) {

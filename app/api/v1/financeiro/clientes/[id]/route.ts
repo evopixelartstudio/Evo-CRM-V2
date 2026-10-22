@@ -20,7 +20,7 @@ export async function GET(
 ): Promise<Response> {
   const params = await props.params;
   const requestId = randomUUID();
-  const authz = await requireRole("viewer", { requestId, resource: "financeiro" });
+  const authz = await requireRole("agent", { requestId, resource: "financeiro" });
   if (!authz.ok) return authz.response;
 
   const supabase = await createClient();

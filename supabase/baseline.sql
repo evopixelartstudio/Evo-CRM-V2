@@ -897,6 +897,9 @@ begin
   return new;
 end$$;
 
+revoke execute on function public.fn_validate_lost_reason_required() from public, anon;
+grant execute on function public.fn_validate_lost_reason_required() to authenticated, service_role;
+
 
 ALTER FUNCTION "public"."fn_validate_lost_reason_required"() OWNER TO "postgres";
 
@@ -27321,6 +27324,9 @@ begin
   end if;
   return new;
 end$$;
+
+revoke execute on function public.fn_validate_lost_reason_required() from public, anon;
+grant execute on function public.fn_validate_lost_reason_required() to authenticated, service_role;
 
 create or replace function public.fn_atrito_metrics(
   p_org uuid,
@@ -58609,6 +58615,7 @@ create table if not exists public.financial_contracts (
   responsible_user_id uuid references auth.users(id) on delete set null,
 
   title text not null,
+  service_name text,
   description text,
   modality text not null default 'recurring'
     check (modality in ('one_off', 'installments', 'recurring')),
@@ -58616,23 +58623,32 @@ create table if not exists public.financial_contracts (
     check (recurrence_period is null or recurrence_period in ('monthly', 'bimonthly', 'quarterly', 'semi_annual', 'annual')),
 
   total_cents bigint not null default 0 check (total_cents >= 0),
+  amount_cents bigint not null default 0 check (amount_cents >= 0),
   currency text not null default 'BRL' check (char_length(currency) = 3),
 
   contract_date date not null default current_date,
   start_date date not null default current_date,
   end_date date,
   due_day integer check (due_day is null or (due_day >= 1 and due_day <= 31)),
+  installments_count integer default 1 check (installments_count >= 1),
 
   status text not null default 'active'
     check (status in ('draft', 'active', 'paused', 'completed', 'cancelled')),
 
   notes text,
   custom_fields jsonb not null default '{}'::jsonb,
+  metadata jsonb not null default '{}'::jsonb,
 
   created_by_user_id uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.financial_contracts
+  add column if not exists service_name text,
+  add column if not exists amount_cents bigint not null default 0,
+  add column if not exists installments_count integer default 1,
+  add column if not exists metadata jsonb not null default '{}'::jsonb;
 
 create index if not exists financial_contracts_org_status_idx
   on public.financial_contracts (organization_id, status);
@@ -58653,11 +58669,13 @@ create table if not exists public.financial_invoices (
   account_plan_id uuid references public.account_plans(id) on delete set null,
 
   direction text not null default 'in' check (direction in ('in', 'out')),
+  type text not null default 'income' check (type in ('income', 'expense')),
   category text default 'outros',
   title text not null,
 
   contracted_cents bigint not null default 0 check (contracted_cents >= 0),
   amount_cents bigint not null default 0 check (amount_cents >= 0),
+  billed_cents bigint not null default 0 check (billed_cents >= 0),
   paid_cents bigint not null default 0 check (paid_cents >= 0),
   currency text not null default 'BRL' check (char_length(currency) = 3),
 
@@ -58666,23 +58684,32 @@ create table if not exists public.financial_invoices (
 
   payment_method text check (
     payment_method is null or
-    payment_method in ('pix', 'credit_card', 'debit_card', 'boleto', 'transfer', 'cash', 'other')
+    payment_method in ('pix', 'credit_card', 'debit_card', 'boleto', 'transfer', 'bank_transfer', 'bank_slip', 'cash', 'other')
   ),
 
   installment_number integer default 1 check (installment_number >= 1),
   total_installments integer default 1 check (total_installments >= 1),
+  installment_total integer default 1 check (installment_total >= 1),
 
   status text not null default 'pending' check (
-    status in ('pending', 'paid', 'partial', 'overdue', 'cancelled', 'reversed')
+    status in ('pending', 'paid', 'partial', 'partially_paid', 'overdue', 'cancelled', 'reversed')
   ),
 
   notes text,
+  metadata jsonb not null default '{}'::jsonb,
+  custom_fields jsonb not null default '{}'::jsonb,
   reverses_invoice_id uuid references public.financial_invoices(id) on delete set null,
 
   created_by_user_id uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.financial_invoices
+  add column if not exists type text not null default 'income',
+  add column if not exists billed_cents bigint not null default 0,
+  add column if not exists installment_total integer default 1,
+  add column if not exists metadata jsonb not null default '{}'::jsonb;
 
 create index if not exists financial_invoices_org_status_due_idx
   on public.financial_invoices (organization_id, status, due_date desc);
@@ -58697,23 +58724,167 @@ alter table public.financial_entries
 alter table public.financial_entries
   add column if not exists contact_id uuid references public.contacts(id) on delete set null;
 
+create or replace function public.fn_validate_financial_contracts_org_integrity()
+returns trigger
+language plpgsql
+set search_path to 'public', 'pg_temp'
+as $$
+begin
+  if new.contact_id is not null then
+    if not exists (
+      select 1 from public.contacts
+      where id = new.contact_id and organization_id = new.organization_id
+    ) then
+      raise exception 'Cross-tenant violation: contact % does not belong to organization %', new.contact_id, new.organization_id
+        using errcode = '23503';
+    end if;
+  end if;
+
+  if new.company_id is not null then
+    if not exists (
+      select 1 from public.companies
+      where id = new.company_id and organization_id = new.organization_id
+    ) then
+      raise exception 'Cross-tenant violation: company % does not belong to organization %', new.company_id, new.organization_id
+        using errcode = '23503';
+    end if;
+  end if;
+
+  if new.lead_id is not null then
+    if not exists (
+      select 1 from public.crm_leads
+      where id = new.lead_id and organization_id = new.organization_id
+    ) then
+      raise exception 'Cross-tenant violation: lead % does not belong to organization %', new.lead_id, new.organization_id
+        using errcode = '23503';
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+revoke execute on function public.fn_validate_financial_contracts_org_integrity() from public, anon;
+grant execute on function public.fn_validate_financial_contracts_org_integrity() to authenticated, service_role;
+
+drop trigger if exists trg_validate_financial_contracts_org_integrity on public.financial_contracts;
+create trigger trg_validate_financial_contracts_org_integrity
+  before insert or update of organization_id, contact_id, company_id, lead_id
+  on public.financial_contracts
+  for each row execute function public.fn_validate_financial_contracts_org_integrity();
+
+create or replace function public.fn_validate_financial_invoices_org_integrity()
+returns trigger
+language plpgsql
+set search_path to 'public', 'pg_temp'
+as $$
+begin
+  if new.contract_id is not null then
+    if not exists (
+      select 1 from public.financial_contracts
+      where id = new.contract_id and organization_id = new.organization_id
+    ) then
+      raise exception 'Cross-tenant violation: contract % does not belong to organization %', new.contract_id, new.organization_id
+        using errcode = '23503';
+    end if;
+  end if;
+
+  if new.contact_id is not null then
+    if not exists (
+      select 1 from public.contacts
+      where id = new.contact_id and organization_id = new.organization_id
+    ) then
+      raise exception 'Cross-tenant violation: contact % does not belong to organization %', new.contact_id, new.organization_id
+        using errcode = '23503';
+    end if;
+  end if;
+
+  if new.lead_id is not null then
+    if not exists (
+      select 1 from public.crm_leads
+      where id = new.lead_id and organization_id = new.organization_id
+    ) then
+      raise exception 'Cross-tenant violation: lead % does not belong to organization %', new.lead_id, new.organization_id
+        using errcode = '23503';
+    end if;
+  end if;
+
+  if new.account_id is not null then
+    if not exists (
+      select 1 from public.financial_accounts
+      where id = new.account_id and organization_id = new.organization_id
+    ) then
+      raise exception 'Cross-tenant violation: account % does not belong to organization %', new.account_id, new.organization_id
+        using errcode = '23503';
+    end if;
+  end if;
+
+  if new.account_plan_id is not null then
+    if not exists (
+      select 1 from public.account_plans
+      where id = new.account_plan_id and organization_id = new.organization_id
+    ) then
+      raise exception 'Cross-tenant violation: account_plan % does not belong to organization %', new.account_plan_id, new.organization_id
+        using errcode = '23503';
+    end if;
+  end if;
+
+  if new.reverses_invoice_id is not null then
+    if not exists (
+      select 1 from public.financial_invoices
+      where id = new.reverses_invoice_id and organization_id = new.organization_id
+    ) then
+      raise exception 'Cross-tenant violation: reverses_invoice % does not belong to organization %', new.reverses_invoice_id, new.organization_id
+        using errcode = '23503';
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+revoke execute on function public.fn_validate_financial_invoices_org_integrity() from public, anon;
+grant execute on function public.fn_validate_financial_invoices_org_integrity() to authenticated, service_role;
+
+drop trigger if exists trg_validate_financial_invoices_org_integrity on public.financial_invoices;
+create trigger trg_validate_financial_invoices_org_integrity
+  before insert or update of organization_id, contract_id, contact_id, lead_id, account_id, account_plan_id, reverses_invoice_id
+  on public.financial_invoices
+  for each row execute function public.fn_validate_financial_invoices_org_integrity();
+
 do $$
 declare t text;
 begin
   foreach t in array array['financial_contracts', 'financial_invoices'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('drop policy if exists tenant_isolation_%I_all on public.%I', t, t);
+    execute format('drop policy if exists tenant_isolation_%I_read on public.%I', t, t);
+    execute format('drop policy if exists tenant_isolation_%I_write on public.%I', t, t);
+
     execute format($f$
-      create policy tenant_isolation_%I_all on public.%I
-        for all
-        using (organization_id in (select public.fn_user_org_ids()) or public.fn_is_platform_admin())
-        with check (
-          public.fn_is_platform_admin()
-          or (organization_id in (select public.fn_user_org_ids())
-              and public.fn_role_at_least(organization_id, 'agent'))
-        )
+      create policy tenant_isolation_%I_read on public.%I
+        for select
+        using (
+          organization_id in (select public.fn_user_org_ids())
+          and public.fn_role_at_least(organization_id, 'agent')
+        );
     $f$, t, t);
-    execute format('revoke all on public.%I from anon', t);
+
+    execute format($f$
+      create policy tenant_isolation_%I_write on public.%I
+        for all
+        using (
+          organization_id in (select public.fn_user_org_ids())
+          and public.fn_role_at_least(organization_id, 'agent')
+        )
+        with check (
+          organization_id in (select public.fn_user_org_ids())
+          and public.fn_role_at_least(organization_id, 'agent')
+        );
+    $f$, t, t);
+
+    execute format('revoke all on public.%I from anon, public', t);
+    execute format('grant select, insert, update, delete on public.%I to authenticated, service_role', t);
   end loop;
 end $$;
 

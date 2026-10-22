@@ -103,22 +103,42 @@ async function cancelaFollowupsDoLead(
     const convIds = (links ?? []).map((l) => l.target_id).filter(Boolean);
 
     if (convIds.length > 0) {
-      await supabase
-        .from("followup_enrollments")
-        .update({
-          status: "cancelled",
-          outcome: "handoff",
-          cancel_reason: "lead_closed",
-          next_eval_at: null,
-          claimed_until: null,
-          completed_at: new Date().toISOString(),
-        })
+      // Proteger outras oportunidades abertas do mesmo contato/conversa:
+      // Se houver OUTRO lead com status 'open' vinculado a esta mesma conversa,
+      // o follow-up da conversa deve continuar ativo para a outra oportunidade.
+      const { data: outrosLeadsAbertos } = await supabase
+        .from("crm_lead_links")
+        .select("target_id, crm_leads!inner(id, status)")
         .eq("organization_id", orgId)
-        .in("conversation_id", convIds)
-        .in("status", ["active", "waiting_reply", "paused_handoff", "paused_manual"]);
+        .eq("target_kind", "conversation")
+        .in("target_id", convIds)
+        .neq("lead_id", leadId)
+        .eq("crm_leads.status", "open");
+
+      const convsComOutroLeadAberto = new Set(
+        (outrosLeadsAbertos ?? []).map((l: any) => l.target_id),
+      );
+
+      const convsParaCancelar = convIds.filter((id) => !convsComOutroLeadAberto.has(id));
+
+      if (convsParaCancelar.length > 0) {
+        await supabase
+          .from("followup_enrollments")
+          .update({
+            status: "cancelled",
+            outcome: "handoff",
+            cancel_reason: "lead_closed",
+            next_eval_at: null,
+            claimed_until: null,
+            completed_at: new Date().toISOString(),
+          })
+          .eq("organization_id", orgId)
+          .in("conversation_id", convsParaCancelar)
+          .in("status", ["active", "waiting_reply", "paused_handoff", "paused_manual"]);
+      }
     }
   } catch (err) {
-    console.warn("[encerramento] cancelaFollowupsDoLead:", err);
+    // Falha em cancelamento de follow-up não aborta o encerramento do negócio
   }
 }
 
