@@ -94,6 +94,10 @@ export async function POST(req: NextRequest): Promise<Response> {
     responsible_user_id,
     notes,
     gerar_cobrancas_automaticas,
+    payment_status,
+    paid_amount_cents,
+    payment_date,
+    payment_method,
     pagamento_ja_realizado,
     data_pagamento_realizada,
     forma_pagamento,
@@ -181,6 +185,44 @@ export async function POST(req: NextRequest): Promise<Response> {
   // 4. Gerar cobranças automáticas se solicitado
   let cobrancasGeradas = 0;
   if (gerar_cobrancas_automaticas) {
+    const isPaidNow = payment_status === "full" || payment_status === "partial" || Boolean(pagamento_ja_realizado);
+    const paidDateStr = payment_date || data_pagamento_realizada || contract_date || start_date;
+    const effectivePaidAt = paidDateStr
+      ? new Date(`${paidDateStr}T12:00:00Z`).toISOString()
+      : new Date().toISOString();
+
+    // Resolver conta bancária/caixa para lançamentos financeiros
+    let targetAccountId = account_id || null;
+    if (!targetAccountId && isPaidNow) {
+      const { data: defaultAcc } = await supabase
+        .from("financial_accounts")
+        .select("id")
+        .eq("organization_id", authz.org.orgId)
+        .eq("is_active", true)
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      targetAccountId = defaultAcc?.id || null;
+
+      if (!targetAccountId) {
+        const { data: newAcc } = await supabase
+          .from("financial_accounts")
+          .insert({
+            organization_id: authz.org.orgId,
+            name: "Conta Principal",
+            kind: "cash",
+            opening_balance_cents: 0,
+            currency: "BRL",
+            is_active: true,
+          })
+          .select("id")
+          .single();
+        targetAccountId = newAcc?.id || null;
+      }
+    }
+
+    const effectivePaymentMethod = payment_method || forma_pagamento || "pix";
+
     const parcelas = gerarParcelasDoContrato({
       contract_id: (contract as any).id,
       contact_id,
@@ -188,39 +230,47 @@ export async function POST(req: NextRequest): Promise<Response> {
       amount_cents,
       modality,
       installments_count,
+      contract_date,
       start_date,
       due_day,
+      payment_status,
+      paid_amount_cents,
+      payment_date: paidDateStr,
+      payment_method: effectivePaymentMethod,
     });
 
     if (parcelas.length > 0) {
-      const isPaidNow = Boolean(pagamento_ja_realizado);
-      const paidDateStr = data_pagamento_realizada || contract_date || start_date;
-      const effectivePaidAt = paidDateStr
-        ? new Date(`${paidDateStr}T12:00:00Z`).toISOString()
-        : new Date().toISOString();
-
-      const invoicesInsert = parcelas.map((p, idx) => {
-        // Se foi explicitamente marcado como já recebido: marca a parcela como paga
-        const parcelaPaga = isPaidNow && (modality === "one_off" || idx === 0);
+      const invoicesInsert = parcelas.map((p) => {
         return {
           organization_id: authz.org.orgId,
           contract_id: (contract as any).id,
           contact_id,
-          account_id: account_id || null,
+          account_id: targetAccountId,
           direction: "in",
           type: "income",
           title: p.title,
           amount_cents: p.amount_cents,
-          contracted_cents: p.amount_cents,
+          contracted_cents: p.contracted_cents,
           billed_cents: p.billed_cents,
-          paid_cents: parcelaPaga ? p.amount_cents : 0,
-          paid_at: parcelaPaga ? effectivePaidAt : null,
-          payment_method: parcelaPaga ? (forma_pagamento || "pix") : null,
+          paid_cents: p.paid_cents,
+          paid_at: p.paid_at,
+          payment_method: p.payment_method,
           due_date: p.due_date,
           installment_number: p.installment_number,
           total_installments: p.installment_total,
           installment_total: p.installment_total,
-          status: parcelaPaga ? "paid" : "pending",
+          status: p.status,
+          metadata: p.paid_cents > 0 ? {
+            pagamentos: [
+              {
+                id: randomUUID(),
+                valor_cents: p.paid_cents,
+                data_pagamento: p.paid_at || effectivePaidAt,
+                forma_pagamento: p.payment_method || effectivePaymentMethod,
+                registrado_por_user_id: authz.user.id,
+              }
+            ]
+          } : {},
         };
       });
 
@@ -232,24 +282,35 @@ export async function POST(req: NextRequest): Promise<Response> {
       if (!invoiceErr) {
         cobrancasGeradas = invoicesInsert.length;
 
-        // Se pago e houver conta, registra também lançamento em financial_entries
-        if (isPaidNow && account_id && createdInvoices) {
+        // Se pago e houver conta, registra lançamento no extrato (financial_entries) sem duplicar
+        if (isPaidNow && targetAccountId && createdInvoices) {
           for (const inv of createdInvoices as any[]) {
-            if (inv.status === "paid") {
-              await supabase.from("financial_entries").insert({
-                organization_id: authz.org.orgId,
-                account_id,
-                direction: "in",
-                amount_cents: inv.paid_cents,
-                description: `Recebimento Contrato: ${inv.title}`,
-                entry_date: paidDateStr,
-                status: "paid",
-                paid_at: effectivePaidAt,
-                origin: "manual",
-                created_by_user_id: authz.user.id,
-                contract_id: (contract as any).id,
-                contact_id,
-              } as any);
+            if (inv.paid_cents > 0) {
+              const { data: existingEntry } = await supabase
+                .from("financial_entries")
+                .select("id")
+                .eq("organization_id", authz.org.orgId)
+                .eq("contract_id", (contract as any).id)
+                .eq("amount_cents", inv.paid_cents)
+                .eq("entry_date", paidDateStr)
+                .maybeSingle();
+
+              if (!existingEntry) {
+                await supabase.from("financial_entries").insert({
+                  organization_id: authz.org.orgId,
+                  account_id: targetAccountId,
+                  direction: "in",
+                  amount_cents: inv.paid_cents,
+                  description: `Recebimento Contrato: ${inv.title}`,
+                  entry_date: paidDateStr,
+                  status: "paid",
+                  paid_at: inv.paid_at || effectivePaidAt,
+                  origin: "manual",
+                  created_by_user_id: authz.user.id,
+                  contract_id: (contract as any).id,
+                  contact_id,
+                } as any);
+              }
             }
           }
         }

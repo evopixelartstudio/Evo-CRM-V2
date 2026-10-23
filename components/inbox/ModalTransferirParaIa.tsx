@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useT } from "@/hooks/i18n/useT";
 import { apiClient } from "@/lib/api/client";
@@ -78,22 +78,21 @@ export function ModalTransferirParaIa({
     enabled: open,
   });
 
-  const agents = useMemo(() => agentsData ?? [], [agentsData]);
+  const agents = agentsData ?? [];
 
-  // Deriva o agente selecionado padrão (ativo ou primeiro da lista)
-  const defaultAgentId = useMemo(() => {
+  // Seleciona o agente ativo ou o primeiro disponível ao abrir
+  useEffect(() => {
+    if (!open) return;
     if (activeAgentId && agents.some((a) => a.agent_id === activeAgentId)) {
-      return activeAgentId;
+      setSelectedAgentId(activeAgentId);
+    } else if (agents.length > 0 && !selectedAgentId) {
+      setSelectedAgentId(agents[0]?.agent_id ?? "");
     }
-    return agents[0]?.agent_id ?? "";
-  }, [activeAgentId, agents]);
-
-  const effectiveAgentId = selectedAgentId || defaultAgentId;
+  }, [open, activeAgentId, agents, selectedAgentId]);
 
   // Limpa campos ao fechar
   const handleClose = (nextOpen: boolean) => {
     if (!nextOpen) {
-      setSelectedAgentId("");
       setContextNote("");
       setSummary("");
       setObjective("Continuar atendimento");
@@ -122,8 +121,7 @@ export function ModalTransferirParaIa({
 
   // Executar transferência
   async function handleConfirmar() {
-    const targetAgentId = selectedAgentId || defaultAgentId;
-    if (!targetAgentId) {
+    if (!selectedAgentId) {
       toast.error(t("Selecione um agente de IA para assumir o atendimento."));
       return;
     }
@@ -131,7 +129,7 @@ export function ModalTransferirParaIa({
     try {
       await retomar.mutateAsync({
         conversation_id: conversationId,
-        agent_id: targetAgentId,
+        agent_id: selectedAgentId,
         context_note: contextNote.trim() || null,
         objective: objective.trim() || null,
         summary: summary.trim() || null,
@@ -186,7 +184,7 @@ export function ModalTransferirParaIa({
                 </div>
               </div>
             ) : (
-              <Select value={effectiveAgentId} onValueChange={setSelectedAgentId}>
+              <Select value={selectedAgentId} onValueChange={setSelectedAgentId}>
                 <SelectTrigger id="select-agente-ia" className="w-full">
                   <SelectValue placeholder={t("Escolha um agente…")} />
                 </SelectTrigger>

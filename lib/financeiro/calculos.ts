@@ -249,13 +249,28 @@ export function calcularMetricasDashboard(params: {
         clientesAtivosSet.add(c.contact_id);
       }
 
-      // Se o contrato não tiver cobranças geradas em financial_invoices, reconhece sua receita de competência
+      // Se o contrato não tiver cobranças geradas em financial_invoices, reconhece sua receita e saldos
       if (c.id && !contratosComCobrancasSet.has(c.id)) {
+        const valContrato = Number(c.amount_cents || c.total_cents || 0);
         const dataContrato = (c.contract_date || c.start_date || "").slice(0, 10);
         const entraNoFaturamentoContrato =
           !filtrarPorPeriodo || (dataContrato >= periodoInicio! && dataContrato <= periodoFim!);
         if (entraNoFaturamentoContrato) {
-          faturamento_periodo_cents += Number(c.amount_cents || c.total_cents || 0);
+          faturamento_periodo_cents += valContrato;
+        }
+
+        const meta = (c.metadata as Record<string, unknown>) || {};
+        const pagoMeta = Number(meta.paid_amount_cents || meta.paid_cents || 0);
+        if (pagoMeta > 0) {
+          const dataPagoMeta = String(meta.payment_date || dataContrato).slice(0, 10);
+          const entraNoPago = !filtrarPorPeriodo || (dataPagoMeta >= periodoInicio! && dataPagoMeta <= periodoFim!);
+          if (entraNoPago) {
+            total_recebido_cents += pagoMeta;
+          }
+        }
+        const pendenteContrato = Math.max(0, valContrato - pagoMeta);
+        if (pendenteContrato > 0) {
+          total_a_receber_cents += pendenteContrato;
         }
       }
     }
@@ -267,6 +282,13 @@ export function calcularMetricasDashboard(params: {
       } else if (c.status === "cancelled") {
         cancelamentos_churn_qtd += 1;
       }
+    }
+  }
+
+  // Clientes com cobranças pagas ou ativas também são clientes ativos
+  for (const cob of cobrancas) {
+    if (cob.contact_id && cob.direction === "in" && (cob.status === "paid" || cob.paid_cents > 0)) {
+      clientesAtivosSet.add(cob.contact_id);
     }
   }
 

@@ -28,7 +28,7 @@ export async function POST(_req: NextRequest): Promise<Response> {
     const mcpConfigSnippet = {
       mcpServers: {
         evocrm: {
-          url: `${process.env.NEXT_PUBLIC_APP_URL || "https://crmevopixel.cloud"}/api/mcp`,
+          url: `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/api/mcp`,
           headers: {
             Authorization: `Bearer ${result.plaintext_token}`,
           },

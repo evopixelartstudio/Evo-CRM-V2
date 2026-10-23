@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { devolverAtendimentoAoAgente, type RetomadaDeps } from "@/lib/escalacao/retomada";
 import { buildOpeningMessage } from "@/lib/agent-engine/agent/abertura/ritual";
 import { comandoDaConversa } from "@/lib/inbox/comando-da-conversa";
@@ -164,7 +164,7 @@ describe("EVOCRM — Redesign do Inbox e Transferência Inteligente para IA (16 
 
         // Generic chainable query for secondary tables (crm_leads, crm_pipelines, agent_cases, conversation_notes, etc.)
         const makeChain = () => {
-          const chain: Record<string, unknown> = {};
+          const chain: any = {};
           chain.select = vi.fn(() => chain);
           chain.insert = vi.fn(async () => ({ error: null }));
           chain.update = vi.fn(() => chain);
@@ -178,7 +178,7 @@ describe("EVOCRM — Redesign do Inbox e Transferência Inteligente para IA (16 
           chain.range = vi.fn(() => chain);
           chain.maybeSingle = vi.fn(async () => ({ data: null, error: null }));
           chain.single = vi.fn(async () => ({ data: null, error: null }));
-          chain.then = (resolve: (v: unknown) => unknown) => Promise.resolve({ data: [], error: null }).then(resolve);
+          chain.then = (resolve: any) => Promise.resolve({ data: [], error: null }).then(resolve);
           return chain;
         };
 

@@ -16,8 +16,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { JanelaSelo } from "@/components/inbox/JanelaSelo";
 import { ChannelLogo } from "@/components/inbox/ChannelLogo";
-import { Phone, ArrowRight, MagnifyingGlass, DotsThree, IdentificationCard } from "@/lib/ui/icons";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Phone, ArrowRight, MagnifyingGlass, DotsThree, IdentificationCard, Robot } from "@/lib/ui/icons";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -188,7 +188,7 @@ export function ConversationHeader({
    * conversa cai na fila esperando gente. A pergunta é a mesma regra de quem
    * manda, aplicada ao estado que a RPC vai gravar.
    */
-  const _liberarDevolveAoAutomatico =
+  const liberarDevolveAoAutomatico =
     comandoDaConversa({
       ...fatosDoComando,
       status: "open",

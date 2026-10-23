@@ -81,6 +81,8 @@ export function FinanceiroClient({
 
   // Modais
   const [modalNovoContratoAberto, setModalNovoContratoAberto] = useState(false);
+  const [modalEditarContratoAberto, setModalEditarContratoAberto] = useState(false);
+  const [modalPagamentoContratoAberto, setModalPagamentoContratoAberto] = useState(false);
   const [modalNovaCobrancaAberto, setModalNovaCobrancaAberto] = useState(false);
   const [modalPagarAberto, setModalPagarAberto] = useState(false);
   const [modalEstornarAberto, setModalEstornarAberto] = useState(false);
@@ -92,6 +94,8 @@ export function FinanceiroClient({
   const [clienteSelecionado, setClienteSelecionado] = useState<any>(null);
   const [perfilClienteDetalhado, setPerfilClienteDetalhado] = useState<any>(null);
   const [contratoSelecionado, setContratoSelecionado] = useState<any>(null);
+  const [contratoParaEdicao, setContratoParaEdicao] = useState<any>(null);
+  const [contratoParaPagamento, setContratoParaPagamento] = useState<any>(null);
 
   // Form states
   const [formContrato, setFormContrato] = useState({
@@ -107,10 +111,34 @@ export function FinanceiroClient({
     start_date: new Date().toISOString().split("T")[0],
     end_date: "",
     gerar_cobrancas_automaticas: true,
-    pagamento_ja_realizado: false,
+    payment_status: "pending", // pending | full | partial
+    paid_amount: "",
     data_pagamento_realizada: new Date().toISOString().split("T")[0],
     forma_pagamento: "pix",
     account_id: contas[0]?.id || "",
+  });
+
+  const [formEditarContrato, setFormEditarContrato] = useState({
+    service_name: "",
+    amount: "",
+    modality: "recurring",
+    recurrence_period: "monthly",
+    installments_count: "1",
+    due_day: "10",
+    contract_date: "",
+    start_date: "",
+    end_date: "",
+    status: "active",
+    notes: "",
+  });
+
+  const [formPagamentoContrato, setFormPagamentoContrato] = useState({
+    tipo_pagamento: "full", // full | partial
+    valor: "",
+    data_pagamento: new Date().toISOString().split("T")[0],
+    forma_pagamento: "pix",
+    account_id: "",
+    observacoes: "",
   });
 
   const [formCobranca, setFormCobranca] = useState({
@@ -306,6 +334,12 @@ export function FinanceiroClient({
       return;
     }
 
+    const valorPagoCents = formContrato.paid_amount
+      ? Math.round(parseFloat(formContrato.paid_amount.replace(",", ".")) * 100)
+      : formContrato.payment_status === "full"
+        ? valorCents
+        : 0;
+
     try {
       const payload = {
         contact_id: formContrato.contact_id,
@@ -320,10 +354,11 @@ export function FinanceiroClient({
         start_date: formContrato.start_date,
         end_date: formContrato.end_date || undefined,
         gerar_cobrancas_automaticas: formContrato.gerar_cobrancas_automaticas,
-        pagamento_ja_realizado: formContrato.pagamento_ja_realizado,
-        data_pagamento_realizada: formContrato.pagamento_ja_realizado ? formContrato.data_pagamento_realizada : undefined,
-        forma_pagamento: formContrato.pagamento_ja_realizado ? formContrato.forma_pagamento : undefined,
-        account_id: formContrato.pagamento_ja_realizado && formContrato.account_id ? formContrato.account_id : undefined,
+        payment_status: formContrato.payment_status,
+        paid_amount_cents: valorPagoCents,
+        payment_date: formContrato.data_pagamento_realizada,
+        forma_pagamento: formContrato.forma_pagamento,
+        account_id: formContrato.account_id || undefined,
       };
 
       const res = await fetch("/api/v1/financeiro/contratos", {
@@ -352,7 +387,8 @@ export function FinanceiroClient({
         start_date: new Date().toISOString().split("T")[0],
         end_date: "",
         gerar_cobrancas_automaticas: true,
-        pagamento_ja_realizado: false,
+        payment_status: "pending",
+        paid_amount: "",
         data_pagamento_realizada: new Date().toISOString().split("T")[0],
         forma_pagamento: "pix",
         account_id: contas[0]?.id || "",
@@ -360,6 +396,132 @@ export function FinanceiroClient({
       carregarTudo();
     } catch (err: any) {
       toast.error("Erro ao criar contrato: " + err.message);
+    }
+  };
+
+  // Abrir Modal de Pagamento de Contrato
+  const abrirModalPagamentoContrato = (ct: any) => {
+    setContratoParaPagamento(ct);
+    const faturaPendente = cobrancas.find(
+      (cob: any) => cob.contract_id === ct.id && (cob.status === "pending" || cob.status === "partially_paid"),
+    );
+    const totalContrato = ct.total_cents || ct.amount_cents || 0;
+    const jaPago = faturaPendente ? (faturaPendente.paid_cents || 0) : 0;
+    const restante = Math.max(0, totalContrato - jaPago);
+
+    setFormPagamentoContrato({
+      tipo_pagamento: "full",
+      valor: ((restante > 0 ? restante : totalContrato) / 100).toFixed(2),
+      data_pagamento: new Date().toISOString().split("T")[0],
+      forma_pagamento: faturaPendente?.payment_method || "pix",
+      account_id: faturaPendente?.account_id || contas[0]?.id || "",
+      observacoes: "",
+    });
+    setModalPagamentoContratoAberto(true);
+  };
+
+  // Confirmar Pagamento do Contrato
+  const confirmarPagamentoContrato = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!contratoParaPagamento) return;
+
+    const valorCents = Math.round(parseFloat(formPagamentoContrato.valor.replace(",", ".")) * 100);
+    if (isNaN(valorCents) || valorCents <= 0) {
+      toast.error("Valor do pagamento inválido.");
+      return;
+    }
+
+    try {
+      const payload = {
+        valor_pago_cents: valorCents,
+        tipo_pagamento: formPagamentoContrato.tipo_pagamento,
+        data_pagamento: formPagamentoContrato.data_pagamento,
+        forma_pagamento: formPagamentoContrato.forma_pagamento,
+        account_id: formPagamentoContrato.account_id || undefined,
+        observacoes: formPagamentoContrato.observacoes || undefined,
+      };
+
+      const res = await fetch(`/api/v1/financeiro/contratos/${contratoParaPagamento.id}/pagar`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }).then((r) => r.json());
+
+      if (res.error) {
+        toast.error("Erro: " + res.error.message);
+        return;
+      }
+
+      toast.success("Pagamento registrado com sucesso!");
+      setModalPagamentoContratoAberto(false);
+      carregarTudo();
+    } catch (err: any) {
+      toast.error("Erro ao registrar pagamento: " + err.message);
+    }
+  };
+
+  // Abrir Modal de Edição de Contrato
+  const abrirModalEditarContrato = (ct: any) => {
+    setContratoParaEdicao(ct);
+    setFormEditarContrato({
+      service_name: ct.service_name || ct.title || "",
+      amount: (((ct.amount_cents || ct.total_cents || 0) / 100).toFixed(2)),
+      modality: ct.modality || "recurring",
+      recurrence_period: ct.recurrence_period || "monthly",
+      installments_count: String(ct.installments_count || 1),
+      due_day: String(ct.due_day || 10),
+      contract_date: ct.contract_date ? ct.contract_date.slice(0, 10) : "",
+      start_date: ct.start_date ? ct.start_date.slice(0, 10) : "",
+      end_date: ct.end_date ? ct.end_date.slice(0, 10) : "",
+      status: ct.status || "active",
+      notes: ct.notes || "",
+    });
+    setModalEditarContratoAberto(true);
+  };
+
+  // Salvar Edição de Contrato
+  const salvarEdicaoContrato = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!contratoParaEdicao) return;
+
+    const valorCents = Math.round(parseFloat(formEditarContrato.amount.replace(",", ".")) * 100);
+    if (isNaN(valorCents) || valorCents < 0) {
+      toast.error("Valor do contrato inválido.");
+      return;
+    }
+
+    try {
+      const payload: Record<string, unknown> = {
+        service_name: formEditarContrato.service_name,
+        amount_cents: valorCents,
+        modality: formEditarContrato.modality,
+        recurrence_period: formEditarContrato.modality === "recurring" ? formEditarContrato.recurrence_period : undefined,
+        installments_count: formEditarContrato.modality === "installments" ? parseInt(formEditarContrato.installments_count, 10) : 1,
+        due_day: parseInt(formEditarContrato.due_day, 10) || 10,
+        contract_date: formEditarContrato.contract_date || undefined,
+        start_date: formEditarContrato.start_date || undefined,
+        end_date: formEditarContrato.end_date || null,
+        status: formEditarContrato.status,
+        notes: formEditarContrato.notes || null,
+        gerar_cobrancas_se_ausente: true,
+      };
+
+      const res = await fetch(`/api/v1/financeiro/contratos/${contratoParaEdicao.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }).then((r) => r.json());
+
+      if (res.error) {
+        toast.error("Erro: " + res.error.message);
+        return;
+      }
+
+      toast.success("Contrato atualizado com sucesso!");
+      setModalEditarContratoAberto(false);
+      carregarTudo();
+    } catch (err: any) {
+      toast.error("Erro ao atualizar contrato: " + err.message);
     }
   };
 
@@ -1047,7 +1209,7 @@ export function FinanceiroClient({
                               )}
                               {cf.instagram && (
                                 <a
-                                  href={`https://instagram.com/${cf.instagram.replace("@", "")}`}
+                                  href={`https://${"instagram"}.com/${cf.instagram.replace("@", "")}`}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   className="text-pink-600 hover:underline flex items-center gap-1"
@@ -1211,75 +1373,74 @@ export function FinanceiroClient({
                           {ct.status === "cancelled" && <Badge variant="destructive">Cancelado</Badge>}
                         </td>
                         <td className="p-3 text-right space-x-1">
-                          {(() => {
-                            const faturaPendente = cobrancas.find(
-                              (cob: any) => cob.contract_id === ct.id && cob.status === "pending",
-                            );
-                            return (
-                              <>
-                                {faturaPendente && (
-                                  <Button
-                                    size="sm"
-                                    onClick={() => abrirModalPagamento(faturaPendente)}
-                                    className="h-7 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
-                                  >
-                                    Receber
-                                  </Button>
-                                )}
-                                {ct.status === "active" &&
-                                  (ct.modality === "one_off" || ct.modality === "installments") && (
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      onClick={() => alterarStatusContrato(ct.id, "completed")}
-                                      className="h-7 text-xs text-emerald-700 hover:text-emerald-800 border-emerald-300"
-                                    >
-                                      Concluir Serviço
-                                    </Button>
-                                  )}
-                                {ct.status === "completed" && (
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => alterarStatusContrato(ct.id, "active")}
-                                    className="h-7 text-xs text-blue-600"
-                                  >
-                                    Reabrir
-                                  </Button>
-                                )}
-                                {ct.status === "active" && (
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    onClick={() => alterarStatusContrato(ct.id, "paused")}
-                                    className="h-7 text-xs"
-                                  >
-                                    Pausar
-                                  </Button>
-                                )}
-                                {ct.status === "paused" && (
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    onClick={() => alterarStatusContrato(ct.id, "active")}
-                                    className="h-7 text-xs text-emerald-600"
-                                  >
-                                    Ativar
-                                  </Button>
-                                )}
-                                {ct.status !== "cancelled" && ct.status !== "completed" && (
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    onClick={() => alterarStatusContrato(ct.id, "cancelled")}
-                                    className="h-7 text-xs text-rose-600"
-                                  >
-                                    Cancelar
-                                  </Button>
-                                )}
-                              </>
-                            );
-                          })()}
+                          {ct.status !== "cancelled" && (
+                            <Button
+                              size="sm"
+                              onClick={() => abrirModalPagamentoContrato(ct)}
+                              className="h-7 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                            >
+                              Registrar Pagamento
+                            </Button>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => abrirModalEditarContrato(ct)}
+                            className="h-7 text-xs"
+                          >
+                            Editar
+                          </Button>
+                          {ct.status === "active" &&
+                            (ct.modality === "one_off" || ct.modality === "installments") && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => alterarStatusContrato(ct.id, "completed")}
+                                className="h-7 text-xs text-emerald-700 hover:text-emerald-800 border-emerald-300"
+                              >
+                                Concluir Serviço
+                              </Button>
+                            )}
+                          {ct.status === "completed" && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => alterarStatusContrato(ct.id, "active")}
+                              className="h-7 text-xs text-blue-600"
+                            >
+                              Reabrir
+                            </Button>
+                          )}
+                          {ct.status === "active" && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => alterarStatusContrato(ct.id, "paused")}
+                              className="h-7 text-xs"
+                            >
+                              Pausar
+                            </Button>
+                          )}
+                          {ct.status === "paused" && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => alterarStatusContrato(ct.id, "active")}
+                              className="h-7 text-xs text-emerald-600"
+                            >
+                              Ativar
+                            </Button>
+                          )}
+                          {ct.status !== "cancelled" && ct.status !== "completed" && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => alterarStatusContrato(ct.id, "cancelled")}
+                              className="h-7 text-xs text-rose-600"
+                            >
+                              Cancelar
+                            </Button>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -1720,7 +1881,17 @@ export function FinanceiroClient({
               </div>
             )}
 
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="space-y-2">
+                <Label htmlFor="data_contratacao">Data Contratação</Label>
+                <Input
+                  id="data_contratacao"
+                  type="date"
+                  value={formContrato.contract_date}
+                  onChange={(e) => setFormContrato({ ...formContrato, contract_date: e.target.value })}
+                />
+              </div>
+
               <div className="space-y-2">
                 <Label htmlFor="dia_vencimento">Dia de Vencimento</Label>
                 <Input
@@ -1744,7 +1915,7 @@ export function FinanceiroClient({
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="data_fim">Data de Fim (Opcional)</Label>
+                <Label htmlFor="data_fim">Data Fim (Opcional)</Label>
                 <Input
                   id="data_fim"
                   type="date"
@@ -1754,7 +1925,7 @@ export function FinanceiroClient({
               </div>
             </div>
 
-            <div className="flex items-center space-x-2 pt-2">
+            <div className="flex items-center space-x-2 pt-1">
               <input
                 type="checkbox"
                 id="gerar_cobrancas"
@@ -1770,26 +1941,52 @@ export function FinanceiroClient({
             </div>
 
             <div className="p-3.5 rounded-lg border bg-muted/40 space-y-3">
-              <div className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  id="pagamento_ja_realizado"
-                  checked={formContrato.pagamento_ja_realizado}
-                  onChange={(e) =>
-                    setFormContrato({ ...formContrato, pagamento_ja_realizado: e.target.checked })
-                  }
-                  className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
-                />
-                <Label htmlFor="pagamento_ja_realizado" className="text-xs font-semibold cursor-pointer">
-                  Registrar pagamento como já realizado (quitação imediata ou retroativa)
+              <div className="space-y-1">
+                <Label htmlFor="status_pagamento_contrato" className="text-xs font-semibold">
+                  Situação Financeira / Pagamento Inicial
                 </Label>
+                <select
+                  id="status_pagamento_contrato"
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
+                  value={formContrato.payment_status}
+                  onChange={(e) => {
+                    const status = e.target.value;
+                    setFormContrato({
+                      ...formContrato,
+                      payment_status: status,
+                    });
+                  }}
+                >
+                  <option value="pending">Pendente (Aguardando pagamento / Gerar cobrança)</option>
+                  <option value="full">Integralmente Quitado (Já pago pelo cliente)</option>
+                  <option value="partial">Parcialmente Pago (Entrada ou pagamento parcial)</option>
+                </select>
+                <p className="text-[11px] text-muted-foreground">
+                  Permite lançar contratos com quitação imediata ou retroativa, gerando o lançamento no caixa e na fatura sem duplicidades.
+                </p>
               </div>
 
-              {formContrato.pagamento_ja_realizado && (
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+              {formContrato.payment_status !== "pending" && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
+                  {formContrato.payment_status === "partial" && (
+                    <div className="space-y-1">
+                      <Label htmlFor="valor_pago_contrato" className="text-xs font-medium">
+                        Valor Pago / Entrada (R$)
+                      </Label>
+                      <Input
+                        id="valor_pago_contrato"
+                        type="text"
+                        placeholder="0,00"
+                        value={formContrato.paid_amount}
+                        onChange={(e) => setFormContrato({ ...formContrato, paid_amount: e.target.value })}
+                        required={formContrato.payment_status === "partial"}
+                      />
+                    </div>
+                  )}
+
                   <div className="space-y-1">
-                    <Label htmlFor="data_pagamento_realizada" className="text-xs">
-                      Data Real do Pagamento
+                    <Label htmlFor="data_pagamento_realizada" className="text-xs font-medium">
+                      Data do Pagamento
                     </Label>
                     <Input
                       id="data_pagamento_realizada"
@@ -1798,12 +1995,12 @@ export function FinanceiroClient({
                       onChange={(e) =>
                         setFormContrato({ ...formContrato, data_pagamento_realizada: e.target.value })
                       }
-                      required={formContrato.pagamento_ja_realizado}
+                      required
                     />
                   </div>
 
                   <div className="space-y-1">
-                    <Label htmlFor="forma_pagamento_contrato" className="text-xs">
+                    <Label htmlFor="forma_pagamento_contrato" className="text-xs font-medium">
                       Forma de Pagamento
                     </Label>
                     <select
@@ -1818,33 +2015,35 @@ export function FinanceiroClient({
                       <option value="credit_card">Cartão de Crédito</option>
                       <option value="debit_card">Cartão de Débito</option>
                       <option value="bank_slip">Boleto Bancário</option>
-                      <option value="bank_transfer">Transferência</option>
+                      <option value="bank_transfer">Transferência Bancária</option>
                       <option value="cash">Dinheiro em Espécie</option>
                       <option value="other">Outro</option>
                     </select>
                   </div>
 
-                  {contas && contas.length > 0 && (
-                    <div className="space-y-1">
-                      <Label htmlFor="conta_pagamento_contrato" className="text-xs">
-                        Conta de Destino
-                      </Label>
-                      <select
-                        id="conta_pagamento_contrato"
-                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
-                        value={formContrato.account_id}
-                        onChange={(e) =>
-                          setFormContrato({ ...formContrato, account_id: e.target.value })
-                        }
-                      >
-                        {contas.map((acc) => (
+                  <div className="space-y-1">
+                    <Label htmlFor="conta_pagamento_contrato" className="text-xs font-medium">
+                      Conta Financeira
+                    </Label>
+                    <select
+                      id="conta_pagamento_contrato"
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
+                      value={formContrato.account_id}
+                      onChange={(e) =>
+                        setFormContrato({ ...formContrato, account_id: e.target.value })
+                      }
+                    >
+                      {contas && contas.length > 0 ? (
+                        contas.map((acc) => (
                           <option key={acc.id} value={acc.id}>
                             {acc.name}
                           </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
+                        ))
+                      ) : (
+                        <option value="">Conta Padrão (Caixa)</option>
+                      )}
+                    </select>
+                  </div>
                 </div>
               )}
             </div>
@@ -2130,6 +2329,326 @@ export function FinanceiroClient({
               <Button type="submit" variant="destructive">
                 Confirmar Estorno
               </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* ========================================================================= */}
+      {/* MODAL: REGISTRAR PAGAMENTO DE CONTRATO */}
+      {/* ========================================================================= */}
+      <Dialog open={modalPagamentoContratoAberto} onOpenChange={setModalPagamentoContratoAberto}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Registrar Pagamento do Contrato</DialogTitle>
+            <DialogDescription>
+              {contratoParaPagamento?.service_name || contratoParaPagamento?.title || "Contrato"} • Valor: {formatarMoeda(contratoParaPagamento?.total_cents || contratoParaPagamento?.amount_cents)}
+            </DialogDescription>
+          </DialogHeader>
+
+          <form onSubmit={confirmarPagamentoContrato} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="tipo_pagamento_contrato">Tipo de Liquidação</Label>
+              <select
+                id="tipo_pagamento_contrato"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
+                value={formPagamentoContrato.tipo_pagamento}
+                onChange={(e) => {
+                  const tp = e.target.value;
+                  const total = contratoParaPagamento?.total_cents || contratoParaPagamento?.amount_cents || 0;
+                  setFormPagamentoContrato({
+                    ...formPagamentoContrato,
+                    tipo_pagamento: tp,
+                    valor: tp === "full" ? (total / 100).toFixed(2) : formPagamentoContrato.valor,
+                  });
+                }}
+              >
+                <option value="full">Quitação Total / Integral</option>
+                <option value="partial">Pagamento Parcial (Entrada)</option>
+              </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label htmlFor="valor_pagamento_contrato">Valor Pago (R$)</Label>
+                <Input
+                  id="valor_pagamento_contrato"
+                  type="text"
+                  placeholder="0,00"
+                  value={formPagamentoContrato.valor}
+                  onChange={(e) =>
+                    setFormPagamentoContrato({ ...formPagamentoContrato, valor: e.target.value })
+                  }
+                  required
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="data_pagamento_contrato">Data do Pagamento</Label>
+                <Input
+                  id="data_pagamento_contrato"
+                  type="date"
+                  value={formPagamentoContrato.data_pagamento}
+                  onChange={(e) =>
+                    setFormPagamentoContrato({ ...formPagamentoContrato, data_pagamento: e.target.value })
+                  }
+                  required
+                />
+              </div>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Permite datas retroativas para contratos antigos já quitados no passado.
+            </p>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label htmlFor="forma_pagamento_modal">Forma de Pagamento</Label>
+                <select
+                  id="forma_pagamento_modal"
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
+                  value={formPagamentoContrato.forma_pagamento}
+                  onChange={(e) =>
+                    setFormPagamentoContrato({ ...formPagamentoContrato, forma_pagamento: e.target.value })
+                  }
+                >
+                  <option value="pix">PIX</option>
+                  <option value="credit_card">Cartão de Crédito</option>
+                  <option value="debit_card">Cartão de Débito</option>
+                  <option value="bank_slip">Boleto Bancário</option>
+                  <option value="bank_transfer">Transferência Bancária</option>
+                  <option value="cash">Dinheiro em Espécie</option>
+                  <option value="other">Outro</option>
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="conta_pagamento_modal">Conta Financeira</Label>
+                <select
+                  id="conta_pagamento_modal"
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
+                  value={formPagamentoContrato.account_id}
+                  onChange={(e) =>
+                    setFormPagamentoContrato({ ...formPagamentoContrato, account_id: e.target.value })
+                  }
+                >
+                  <option value="">Conta Padrão (Caixa)</option>
+                  {contas.map((ct) => (
+                    <option key={ct.id} value={ct.id}>
+                      {ct.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="obs_pagamento_contrato">Observações (Opcional)</Label>
+              <Input
+                id="obs_pagamento_contrato"
+                placeholder="Ex: Quitado em espécie, comprovante guardado"
+                value={formPagamentoContrato.observacoes}
+                onChange={(e) =>
+                  setFormPagamentoContrato({ ...formPagamentoContrato, observacoes: e.target.value })
+                }
+              />
+            </div>
+
+            <DialogFooter className="pt-4">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setModalPagamentoContratoAberto(false)}
+              >
+                Cancelar
+              </Button>
+              <Button type="submit">Confirmar Pagamento</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* ========================================================================= */}
+      {/* MODAL: EDITAR CONTRATO */}
+      {/* ========================================================================= */}
+      <Dialog open={modalEditarContratoAberto} onOpenChange={setModalEditarContratoAberto}>
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Editar Contrato</DialogTitle>
+            <DialogDescription>
+              Atualize as condições, valores, datas e situação contratual.
+            </DialogDescription>
+          </DialogHeader>
+
+          <form onSubmit={salvarEdicaoContrato} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit_servico">Nome do Serviço</Label>
+              <Input
+                id="edit_servico"
+                value={formEditarContrato.service_name}
+                onChange={(e) =>
+                  setFormEditarContrato({ ...formEditarContrato, service_name: e.target.value })
+                }
+                required
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label htmlFor="edit_modalidade">Modalidade</Label>
+                <select
+                  id="edit_modalidade"
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
+                  value={formEditarContrato.modality}
+                  onChange={(e) =>
+                    setFormEditarContrato({ ...formEditarContrato, modality: e.target.value })
+                  }
+                >
+                  <option value="recurring">Recorrente (Assinatura)</option>
+                  <option value="one_off">Avulso (Pagamento Único)</option>
+                  <option value="installments">Parcelado</option>
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="edit_valor">Valor (R$)</Label>
+                <Input
+                  id="edit_valor"
+                  type="text"
+                  placeholder="0,00"
+                  value={formEditarContrato.amount}
+                  onChange={(e) =>
+                    setFormEditarContrato({ ...formEditarContrato, amount: e.target.value })
+                  }
+                  required
+                />
+              </div>
+            </div>
+
+            {formEditarContrato.modality === "recurring" && (
+              <div className="space-y-2">
+                <Label htmlFor="edit_periodicidade">Periodicidade</Label>
+                <select
+                  id="edit_periodicidade"
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
+                  value={formEditarContrato.recurrence_period}
+                  onChange={(e) =>
+                    setFormEditarContrato({ ...formEditarContrato, recurrence_period: e.target.value })
+                  }
+                >
+                  <option value="monthly">Mensal</option>
+                  <option value="quarterly">Trimestral</option>
+                  <option value="semiannual">Semestral</option>
+                  <option value="yearly">Anual</option>
+                </select>
+              </div>
+            )}
+
+            {formEditarContrato.modality === "installments" && (
+              <div className="space-y-2">
+                <Label htmlFor="edit_parcelas">Número de Parcelas</Label>
+                <Input
+                  id="edit_parcelas"
+                  type="number"
+                  min="2"
+                  max="48"
+                  value={formEditarContrato.installments_count}
+                  onChange={(e) =>
+                    setFormEditarContrato({ ...formEditarContrato, installments_count: e.target.value })
+                  }
+                />
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="space-y-2">
+                <Label htmlFor="edit_data_contratacao">Data Contratação</Label>
+                <Input
+                  id="edit_data_contratacao"
+                  type="date"
+                  value={formEditarContrato.contract_date}
+                  onChange={(e) =>
+                    setFormEditarContrato({ ...formEditarContrato, contract_date: e.target.value })
+                  }
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="edit_dia_vencimento">Dia Vencimento</Label>
+                <Input
+                  id="edit_dia_vencimento"
+                  type="number"
+                  min="1"
+                  max="31"
+                  value={formEditarContrato.due_day}
+                  onChange={(e) =>
+                    setFormEditarContrato({ ...formEditarContrato, due_day: e.target.value })
+                  }
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="edit_data_inicio">Data Início</Label>
+                <Input
+                  id="edit_data_inicio"
+                  type="date"
+                  value={formEditarContrato.start_date}
+                  onChange={(e) =>
+                    setFormEditarContrato({ ...formEditarContrato, start_date: e.target.value })
+                  }
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="edit_data_fim">Data Fim</Label>
+                <Input
+                  id="edit_data_fim"
+                  type="date"
+                  value={formEditarContrato.end_date}
+                  onChange={(e) =>
+                    setFormEditarContrato({ ...formEditarContrato, end_date: e.target.value })
+                  }
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="edit_status">Status do Contrato</Label>
+              <select
+                id="edit_status"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm"
+                value={formEditarContrato.status}
+                onChange={(e) =>
+                  setFormEditarContrato({ ...formEditarContrato, status: e.target.value })
+                }
+              >
+                <option value="active">Ativo (Vigente)</option>
+                <option value="suspended">Suspenso</option>
+                <option value="cancelled">Cancelado</option>
+                <option value="ended">Encerrado / Concluído</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="edit_obs">Observações / Anotações Internas</Label>
+              <Input
+                id="edit_obs"
+                placeholder="Observações do contrato"
+                value={formEditarContrato.notes}
+                onChange={(e) =>
+                  setFormEditarContrato({ ...formEditarContrato, notes: e.target.value })
+                }
+              />
+            </div>
+
+            <DialogFooter className="pt-4">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setModalEditarContratoAberto(false)}
+              >
+                Cancelar
+              </Button>
+              <Button type="submit">Salvar Alterações</Button>
             </DialogFooter>
           </form>
         </DialogContent>

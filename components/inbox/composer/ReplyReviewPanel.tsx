@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
 import { showApiError } from "@/components/feedback/ApiErrorToast";
@@ -56,15 +56,11 @@ export function ReplyReviewPanel({
   // conhecido, a frase genérica de sempre continua sendo a verdade.
   const motivo = draft ? motivoDoVeto(draft.error_code) : null;
 
-  const [prevDraftId, setPrevDraftId] = useState<string | null>(null);
-  const currentDraftId = draft?.id ?? null;
-  if (currentDraftId !== prevDraftId) {
-    setPrevDraftId(currentDraftId);
+  useEffect(() => {
     if (draft) {
       setRecolhido(false);
     }
-  }
-
+  }, [draft?.id, draft?.status]);
   async function generate() {
     setNotice(null);
     setBusy(true);
