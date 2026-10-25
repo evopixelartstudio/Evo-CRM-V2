@@ -28,10 +28,10 @@ env:
 
 jobs:
   build-smoke-and-optionally-publish:
-    # O arquivo de publicação só pode ser executado a partir desta branch de
-    # operação. O código compilado vem separadamente da branch do PR e é
+    # O workflow só pode ser iniciado a partir da main depois de revisado e
+    # incorporado. O código compilado vem separadamente da branch do PR e é
     # conferido pelo SHA antes do build.
-    if: github.ref == 'refs/heads/ops/protected-ghcr-pr3'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
