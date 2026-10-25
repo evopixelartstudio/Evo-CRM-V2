@@ -617,12 +617,23 @@ jobs:
         # aceita `timeout-minutes`. Razão e medições: o cabeçalho da action.
         timeout-minutes: 5
 
+      - name: Disponibilizar tags do upstream para a conferência do kit
+        # O checkout do fork não contém as tags/releases do repositório que
+        # originou o produto. A conferência lê a release pelo fork, mas precisa
+        # buscar o update.sh das tags no upstream; isto altera apenas o clone
+        # descartável do runner, nunca o repositório remoto.
+        run: git remote set-url origin https://github.com/melgarafael/DeskcommCRM.git
+
       - name: RLS isolation + governance invariants (pg${{ matrix.pg }})
         # O token é só para `gh release view`: o test:db confere o update.sh da
         # última release publicada (issue #1909), e a API anônima tem teto de 60
         # consultas/hora por IP — o executor próprio é um IP só.
         env:
           GH_TOKEN: ${{ github.token }}
+          # Este fork ainda não publica releases próprias. A conferência do kit
+          # deve comparar com a última release publicada do upstream, sem exigir
+          # criar uma release apenas para o CI do PR.
+          DESKCOMM_RELEASES_LATEST_URL: https://api.github.com/repos/melgarafael/DeskcommCRM/releases/latest
         run: pnpm test:db
 
       # O `update.sh` do cliente roda sobre um banco COM DADOS, e nenhum gate
