@@ -623,6 +623,10 @@ jobs:
         # consultas/hora por IP — o executor próprio é um IP só.
         env:
           GH_TOKEN: ${{ github.token }}
+          # Este fork ainda não publica releases próprias. A conferência do kit
+          # deve comparar com a última release publicada do upstream, sem exigir
+          # criar uma release apenas para o CI do PR.
+          DESKCOMM_RELEASES_LATEST_URL: https://api.github.com/repos/melgarafael/DeskcommCRM/releases/latest
         run: pnpm test:db
 
       # O `update.sh` do cliente roda sobre um banco COM DADOS, e nenhum gate
