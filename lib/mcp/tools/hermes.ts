@@ -1398,33 +1398,88 @@ export const crmCloseConversation: McpToolDefinition<typeof closeConversationSha
   requiresRole: "agent",
   requiresScope: "mcp:write",
   handler: async (input, ctx) => {
-    const { data, error } = await ctx.supabase
+    // Read first so the RPC receives the optimistic-lock revision and so a
+    // missing conversation is distinguishable from an RPC/database failure.
+    const { data: current, error: lookupError } = await ctx.supabase
       .from("conversations")
-      .update({
-        status: "closed",
-        closed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
+      .select("id, organization_id, status, service_revision")
       .eq("id", input.conversation_id)
       .eq("organization_id", ctx.organizationId)
-      .select("id, status, closed_at")
       .maybeSingle();
 
-    if (error || !data) {
-      throw new ApiError(error ? 500 : 404, error ? "close_failed" : "not_found", { details: error?.message }, ctx.requestId, "Conversa não encontrada.");
+    if (lookupError) {
+      throw new ApiError(
+        500,
+        "database_error",
+        { details: lookupError.message },
+        ctx.requestId,
+        "Falha ao consultar a conversa para encerramento.",
+      );
     }
+    if (!current) {
+      throw new ApiError(
+        404,
+        "not_found",
+        undefined,
+        ctx.requestId,
+        "Conversa não encontrada nesta organização.",
+      );
+    }
+
+    // fn_service_status is the single status-transition path. It applies the
+    // service lock, updates service_closed_at/service_revision, and keeps the
+    // demand and routing side effects consistent with the REST API.
+    const { data, error } = await ctx.supabase.rpc("fn_service_status", {
+      p_org: ctx.organizationId,
+      p_conversation: input.conversation_id,
+      p_status: "closed",
+      p_expected: current.service_revision,
+    });
+
+    if (error) {
+      const conflict = error.code === "PT409" || error.code === "40001";
+      const notFound = error.code === "P0002";
+      throw new ApiError(
+        conflict ? 409 : notFound ? 404 : 500,
+        conflict ? "conflict" : notFound ? "not_found" : "close_failed",
+        { details: error.message, code: error.code },
+        ctx.requestId,
+        conflict
+          ? "O atendimento mudou enquanto era encerrado. Atualize e tente novamente."
+          : notFound
+            ? "Conversa não encontrada nesta organização."
+            : "Falha ao encerrar a conversa.",
+      );
+    }
+
+    if (!data) {
+      throw new ApiError(
+        500,
+        "close_failed",
+        undefined,
+        ctx.requestId,
+        "A RPC de encerramento não retornou a conversa atualizada.",
+      );
+    }
+
+    const conversation = {
+      id: data.id,
+      status: data.status,
+      service_closed_at: data.service_closed_at,
+      service_revision: data.service_revision,
+    };
 
     await audit({
       action: "conversation.close" as AuditAction,
       actorApiTokenId: ctx.apiTokenId,
       organizationId: ctx.organizationId,
       resourceType: "conversations",
-      resourceId: data.id,
+      resourceId: conversation.id,
       metadata: { resolution_summary: input.resolution_summary },
       requestId: ctx.requestId,
     });
 
-    return { closed: true, conversation: data };
+    return { closed: true, conversation };
   },
 };
 
